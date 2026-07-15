@@ -470,4 +470,254 @@ $app->delete('/api/whitelist/{id}', function (Request $request, Response $respon
     }
 });
 
+// Helper for Telegram Whitelist Checks
+function isTelegramWhitelisted($chatId, $username) {
+    try {
+        $pdo = getPDO();
+        $stmt = $pdo->prepare("SELECT 1 FROM telegram_whitelist WHERE identifier = :chat_id OR identifier = :username LIMIT 1");
+        $stmt->execute([
+            'chat_id' => strval($chatId),
+            'username' => $username ? '@' . ltrim($username, '@') : '___never___'
+        ]);
+        return (bool)$stmt->fetch();
+    } catch (\Exception $e) {
+        return false;
+    }
+}
+
+// Helper to call Gemini for voice transcription in Webhook
+function callGeminiWebhook(array $parts) {
+    $env = [];
+    $envPath = __DIR__ . '/../.env';
+    if (file_exists($envPath)) {
+        $lines = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        foreach ($lines as $line) {
+            if (strpos(trim($line), '#') === 0) continue;
+            $p = explode('=', $line, 2);
+            if (count($p) === 2) {
+                $env[trim($p[0])] = trim($p[1]);
+            }
+        }
+    }
+    
+    $geminiKey = $env['GEMINI_API_KEY'] ?? '';
+    if (empty($geminiKey) || $geminiKey === 'YOUR_GEMINI_API_KEY_HERE') {
+        return null;
+    }
+    
+    $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" . $geminiKey;
+    $prompt = "Listen to this audio query for a citizen registry search. Extract only the search terms spoken (names, numbers, village) in Arabic, and discard conversational commands like 'ابحث عن' or 'بدي'. Return the clean query text.";
+    
+    $payload = [
+        'contents' => [
+            [
+                'parts' => array_merge($parts, [
+                    ['text' => $prompt]
+                ])
+            ]
+        ]
+    ];
+    
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+    $response = curl_exec($ch);
+    curl_close($ch);
+    
+    if ($response) {
+        $resData = json_decode($response, true);
+        return $resData['candidates'][0]['content']['parts'][0]['text'] ?? null;
+    }
+    return null;
+}
+
+// Helper to send Telegram Message in Webhook
+function sendTelegramMessageWebhook($chatId, $text) {
+    $env = [];
+    $envPath = __DIR__ . '/../.env';
+    if (file_exists($envPath)) {
+        $lines = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        foreach ($lines as $line) {
+            if (strpos(trim($line), '#') === 0) continue;
+            $p = explode('=', $line, 2);
+            if (count($p) === 2) {
+                $env[trim($p[0])] = trim($p[1]);
+            }
+        }
+    }
+    
+    $botToken = $env['TELEGRAM_BOT_TOKEN'] ?? '';
+    if (empty($botToken)) return;
+    
+    $url = "https://api.telegram.org/bot{$botToken}/sendMessage";
+    $payload = [
+        'chat_id' => $chatId,
+        'text' => $text,
+        'parse_mode' => 'HTML'
+    ];
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+    curl_exec($ch);
+    curl_close($ch);
+}
+
+// Webhook Route for Telegram
+$app->post('/api/telegram-webhook', function (Request $request, Response $response) {
+    $body = json_decode($request->getBody()->getContents(), true);
+    if (!$body) {
+        return $response->withStatus(400);
+    }
+    
+    $message = $body['message'] ?? null;
+    if (!$message) {
+        return $response; // Return 200 OK to other update types
+    }
+    
+    $chatId = $message['chat']['id'] ?? '';
+    $username = $message['from']['username'] ?? null;
+    
+    // 1. Authorization check
+    if (!isTelegramWhitelisted($chatId, $username)) {
+        $msg = "⚠️ <b>عذراً، هذا الحساب غير مصرح له بالدخول.</b>\n";
+        $msg .= "يرجى الطلب من المسؤول إدخال معرفك الخاص بالوصول:\n";
+        $msg .= "<code>" . htmlspecialchars($chatId) . "</code>";
+        if ($username) {
+            $msg .= " أو <code>@" . htmlspecialchars($username) . "</code>";
+        }
+        sendTelegramMessageWebhook($chatId, $msg);
+        return $response;
+    }
+    
+    $queryText = null;
+    $isVoice = false;
+    
+    // Load Token
+    $env = [];
+    $envPath = __DIR__ . '/../.env';
+    if (file_exists($envPath)) {
+        $lines = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        foreach ($lines as $line) {
+            if (strpos(trim($line), '#') === 0) continue;
+            $p = explode('=', $line, 2);
+            if (count($p) === 2) {
+                $env[trim($p[0])] = trim($p[1]);
+            }
+        }
+    }
+    $botToken = $env['TELEGRAM_BOT_TOKEN'] ?? '';
+    
+    // 2. Handle Voice notes
+    if (isset($message['voice'])) {
+        $isVoice = true;
+        $fileId = $message['voice']['file_id'];
+        sendTelegramMessageWebhook($chatId, "🎙️ جاري تحميل المقطع الصوتي وتحليله بالذكاء الاصطناعي...");
+        
+        $fileUrl = "https://api.telegram.org/bot{$botToken}/getFile?file_id={$fileId}";
+        $fileRes = file_get_contents($fileUrl);
+        $fileData = json_decode($fileRes, true);
+        $filePath = $fileData['result']['file_path'] ?? '';
+        
+        if ($filePath) {
+            $downloadUrl = "https://api.telegram.org/file/bot{$botToken}/{$filePath}";
+            $audioData = file_get_contents($downloadUrl);
+            $base64Audio = base64_encode($audioData);
+            
+            $parts = [
+                [
+                    'inlineData' => [
+                        'mimeType' => 'audio/ogg',
+                        'data' => $base64Audio
+                    ]
+                ]
+            ];
+            
+            $queryText = callGeminiWebhook($parts);
+            if ($queryText) {
+                sendTelegramMessageWebhook($chatId, "📝 <b>النص المستخرج:</b>\n<i>\"" . htmlspecialchars($queryText) . "\"</i>");
+            }
+        } else {
+            sendTelegramMessageWebhook($chatId, "⚠️ فشل تحميل الملف الصوتي.");
+        }
+    }
+    // 3. Handle Text queries
+    elseif (isset($message['text'])) {
+        $text = trim($message['text']);
+        if ($text === '/start') {
+            sendTelegramMessageWebhook($chatId, "👋 أهلاً بك في <b>نظام استعلام المواطنين</b>.\nيمكنك إرسال رسالة نصية أو تسجيل صوتي باسم المواطن المستعلم عنه للحصول على تفاصيله بالكامل.");
+            return $response;
+        }
+        $queryText = $text;
+    }
+    
+    // 4. Run Search
+    if (!empty($queryText)) {
+        if (!$isVoice) {
+            sendTelegramMessageWebhook($chatId, "🔄 جاري البحث في السجلات...");
+        }
+        
+        try {
+            $pdo = getPDO();
+            $conditions = [];
+            $bindings = [];
+            
+            $stopWords = ["ابحث", "عن", "بدي", "معلومات", "المواطن", "مواطن", "سجل", "الاسم", "حساب", "رقم", "اسم"];
+            $words = explode(' ', $queryText);
+            $filteredWords = [];
+            foreach ($words as $w) {
+                $wClean = trim($w);
+                if (!empty($wClean) && !in_array($wClean, $stopWords)) {
+                    $filteredWords[] = $wClean;
+                }
+            }
+            
+            if (count($filteredWords) > 0) {
+                foreach ($filteredWords as $idx => $word) {
+                    $wordNorm = ArabicNormalizer::normalize($word);
+                    if (!empty($wordNorm)) {
+                        $paramName = "q_word_" . $idx;
+                        $conditions[] = "(normalized_name LIKE :$paramName OR normalized_father_name LIKE :$paramName OR normalized_mother_name LIKE :$paramName OR registry_no LIKE :$paramName OR village LIKE :$paramName)";
+                        $bindings[$paramName] = '%' . $wordNorm . '%';
+                    }
+                }
+                
+                if (count($conditions) > 0) {
+                    $where = "WHERE " . implode(" AND ", $conditions);
+                    $sql = "SELECT name, father_name, mother_name, registry_no, sect, birth_date, birth_date_raw, gender, village, page_number, row_index 
+                            FROM voters $where ORDER BY village ASC, registry_no ASC LIMIT 15";
+                    $stmt = $pdo->prepare($sql);
+                    $stmt->execute($bindings);
+                    $results = $stmt->fetchAll();
+                    
+                    if (count($results) > 0) {
+                        $reply = "🔍 <b>نتائج البحث المكتشفة:</b>\n\n";
+                        foreach ($results as $v) {
+                            $reply .= "👤 <b>" . htmlspecialchars($v['name']) . "</b>\n";
+                            $reply .= "▪️ <b>اسم الأب:</b> " . htmlspecialchars($v['father_name']) . "\n";
+                            $reply .= "▪️ <b>اسم الأم:</b> " . htmlspecialchars($v['mother_name']) . "\n";
+                            $reply .= "▪️ <b>رقم القيد / البلدة:</b> " . htmlspecialchars($v['registry_no']) . " / " . htmlspecialchars($v['village']) . "\n";
+                            $reply .= "▪️ <b>المذهب / الولادة:</b> " . htmlspecialchars($v['sect']) . " / " . htmlspecialchars($v['birth_date'] ? $v['birth_date'] : $v['birth_date_raw']) . "\n";
+                            $reply .= "📌 ص <b>" . $v['page_number'] . "</b> / س <b>" . $v['row_index'] . "</b>\n";
+                            $reply .= "──────────────────\n";
+                        }
+                        sendTelegramMessageWebhook($chatId, $reply);
+                    } else {
+                        sendTelegramMessageWebhook($chatId, "❌ لم يتم العثور على أي مواطن يطابق معايير البحث.");
+                    }
+                }
+            } else {
+                sendTelegramMessageWebhook($chatId, "❌ الرجاء كتابة معايير بحث واضحة.");
+            }
+        } catch (\Exception $ex) {
+            sendTelegramMessageWebhook($chatId, "⚠️ حدث خطأ في قاعدة البيانات أثناء معالجة الطلب.");
+        }
+    }
+    
+    return $response;
+});
+
 $app->run();
