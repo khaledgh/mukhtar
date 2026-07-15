@@ -9,6 +9,17 @@ use App\JWTHelper;
 
 require __DIR__ . '/../vendor/autoload.php';
 
+// Global CORS handling for both standard and preflight OPTIONS requests
+if (isset($_SERVER['REQUEST_METHOD'])) {
+    header('Access-Control-Allow-Origin: *');
+    header('Access-Control-Allow-Headers: X-Requested-With, Content-Type, Accept, Origin, Authorization');
+    header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+    header('Access-Control-Max-Age: 86400');
+    if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+        exit(0);
+    }
+}
+
 $app = AppFactory::create();
 
 // Dynamically set base path if running via index.php
@@ -19,15 +30,6 @@ if (strpos($requestUri, '/index.php') === 0) {
 
 // Add Error Middleware
 $app->addErrorMiddleware(true, true, true);
-
-// CORS Middleware
-$app->add(function (Request $request, $handler) {
-    $response = $handler->handle($request);
-    return $response
-        ->withHeader('Access-Control-Allow-Origin', '*')
-        ->withHeader('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, Accept, Origin, Authorization')
-        ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-});
 
 // Helper for PDO Connection
 function getPDO() {
