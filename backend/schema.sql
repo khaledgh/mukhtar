@@ -41,6 +41,22 @@ CREATE TABLE IF NOT EXISTS telegram_whitelist (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS chatbot_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    chat_id VARCHAR(100) NOT NULL,
+    username VARCHAR(100) NULL,
+    message_type ENUM('text', 'voice') NOT NULL,
+    query_text TEXT NULL,
+    response_text TEXT NULL,
+    prompt_tokens INT DEFAULT 0,
+    completion_tokens INT DEFAULT 0,
+    estimated_cost DECIMAL(12, 9) DEFAULT 0.000000000,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_chat_id (chat_id),
+    INDEX idx_message_type (message_type),
+    INDEX idx_created_at (created_at)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- Insert default superadmin/admin123 if not exists
 INSERT INTO users (username, password_hash, role) 
 SELECT 'superadmin', '$2y$10$5h5.s5cExZ7kZ57E5s5s5eeE7xXyY8z2a7q.p7lK8z3u3o3vGgX8v', 'super_admin'

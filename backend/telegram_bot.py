@@ -91,10 +91,46 @@ def transcribe_audio_gemini(base64_audio):
         if res.status_code == 200:
             res_data = res.json()
             text = res_data['candidates'][0]['content']['parts'][0]['text']
-            return text.strip()
+            usage = res_data.get('usageMetadata', {})
+            prompt_tokens = usage.get('promptTokenCount', 0)
+            completion_tokens = usage.get('candidatesTokenCount', 0)
+            return {
+                "text": text.strip() if text else None,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens
+            }
     except Exception as e:
         print(f"Gemini API error during voice transcription: {e}")
     return None
+
+def log_chatbot_interaction(chat_id, username, message_type, query_text, response_text, prompt_tokens=0, completion_tokens=0):
+    try:
+        input_rate = 0.000000075
+        output_rate = 0.00000030
+        estimated_cost = (prompt_tokens * input_rate) + (completion_tokens * output_rate)
+        
+        conn = get_db_conn()
+        cursor = conn.cursor()
+        query = """
+            INSERT INTO chatbot_logs 
+            (chat_id, username, message_type, query_text, response_text, prompt_tokens, completion_tokens, estimated_cost) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        cursor.execute(query, (
+            str(chat_id),
+            username,
+            message_type,
+            query_text,
+            response_text,
+            int(prompt_tokens),
+            int(completion_tokens),
+            float(estimated_cost)
+        ))
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"Failed to log chatbot interaction: {e}")
 
 def query_citizens_smart(query_text):
     try:
@@ -183,6 +219,8 @@ def main():
                 
             query_text = None
             is_voice = False
+            prompt_tokens = 0
+            completion_tokens = 0
             
             # Voice check
             if message.get("voice"):
@@ -195,23 +233,35 @@ def main():
                     audio_res = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}")
                     audio_b64 = base64.encodebytes(audio_res.content).decode("utf-8")
                     
-                    query_text = transcribe_audio_gemini(audio_b64)
-                    if query_text:
+                    gemini_res = transcribe_audio_gemini(audio_b64)
+                    if gemini_res and gemini_res.get("text"):
+                        query_text = gemini_res["text"]
+                        prompt_tokens = gemini_res.get("prompt_tokens", 0)
+                        completion_tokens = gemini_res.get("completion_tokens", 0)
                         send_message(chat_id, f"📝 <b>النص المستخرج:</b>\n<i>\"{query_text}\"</i>")
+                    else:
+                        reply = "⚠️ فشل استخراج النص بالذكاء الاصطناعي."
+                        send_message(chat_id, reply)
+                        log_chatbot_interaction(chat_id, username, 'voice', '[Voice Note (transcription failed)]', reply, 0, 0)
                 except Exception as ex:
                     print(f"Voice download error: {ex}")
-                    send_message(chat_id, "⚠️ فشل تحميل الملف الصوتي.")
+                    reply = "⚠️ فشل تحميل الملف الصوتي."
+                    send_message(chat_id, reply)
+                    log_chatbot_interaction(chat_id, username, 'voice', '[Voice Note (download failed)]', reply, 0, 0)
             
             # Text check
             elif message.get("text"):
                 text = message["text"].strip()
                 if text == "/start":
-                    send_message(chat_id, "👋 أهلاً بك في <b>نظام استعلام المواطنين</b>.\nيمكنك إرسال رسالة نصية أو تسجيل صوتي باسم المواطن المستعلم عنه للحصول على تفاصيله بالكامل.")
+                    reply = "👋 أهلاً بك في <b>نظام استعلام المواطنين</b>.\nيمكنك إرسال رسالة نصية أو تسجيل صوتي باسم المواطن المستعلم عنه للحصول على تفاصيله بالكامل."
+                    send_message(chat_id, reply)
+                    log_chatbot_interaction(chat_id, username, 'text', '/start', reply, 0, 0)
                     continue
                 query_text = text
                 
             # Process query
             if query_text:
+                msg_type = 'voice' if is_voice else 'text'
                 if not is_voice:
                     send_message(chat_id, "🔄 جاري البحث في السجلات...")
                 
@@ -227,8 +277,11 @@ def main():
                         reply += f"📌 ص <b>{v['page_number']}</b> / س <b>{v['row_index']}</b>\n"
                         reply += "──────────────────\n"
                     send_message(chat_id, reply)
+                    log_chatbot_interaction(chat_id, username, msg_type, query_text, reply, prompt_tokens, completion_tokens)
                 else:
-                    send_message(chat_id, "❌ لم يتم العثور على أي مواطن يطابق معايير البحث.")
+                    reply = "❌ لم يتم العثور على أي مواطن يطابق معايير البحث."
+                    send_message(chat_id, reply)
+                    log_chatbot_interaction(chat_id, username, msg_type, query_text, reply, prompt_tokens, completion_tokens)
 
 if __name__ == "__main__":
     main()

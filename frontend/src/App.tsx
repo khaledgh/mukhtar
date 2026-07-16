@@ -20,7 +20,10 @@ import {
   Printer,
   Shield,
   Trash2,
-  Plus
+  Plus,
+  MessageSquare,
+  Cpu,
+  Mic
 } from 'lucide-react';
 
 interface Voter {
@@ -102,6 +105,26 @@ export default function App() {
   const [newIdentifier, setNewIdentifier] = useState('');
   const [newDesc, setNewDesc] = useState('');
 
+  // Admin Sub Tabs
+  const [adminSubTab, setAdminSubTab] = useState<'users' | 'whitelist' | 'chatbot'>('users');
+
+  // Chatbot Logs State
+  const [chatbotLogs, setChatbotLogs] = useState<any[]>([]);
+  const [logsStats, setLogsStats] = useState<any>({
+    total_queries: 0,
+    voice_queries: 0,
+    text_queries: 0,
+    total_tokens: 0,
+    total_cost: 0
+  });
+  const [logsCurrentPage, setLogsCurrentPage] = useState(1);
+  const [logsTotalPages, setLogsTotalPages] = useState(1);
+  const [logsTotalCount, setLogsTotalCount] = useState(0);
+  const [logsSearch, setLogsSearch] = useState('');
+  const [logsType, setLogsType] = useState('');
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
+
   // Toggle Theme
   const toggleTheme = () => {
     const newTheme = theme === 'dark' ? 'light' : 'dark';
@@ -178,8 +201,57 @@ export default function App() {
       const resWhitelist = await authFetch(`${API_BASE_URL}/api/whitelist`);
       const dataWhitelist = await resWhitelist.json();
       setWhitelist(dataWhitelist);
+      
+      fetchChatbotLogs(1);
     } catch (err) {
       console.error('Error fetching admin data:', err);
+    }
+  };
+
+  // Fetch Chatbot Logs
+  const fetchChatbotLogs = async (page = 1) => {
+    if (!token || userRole !== 'super_admin') return;
+    setLogsLoading(true);
+    try {
+      const queryParams = new URLSearchParams({
+        page: page.toString(),
+        limit: '20',
+        q: logsSearch,
+        type: logsType
+      });
+      const res = await authFetch(`${API_BASE_URL}/api/chatbot-logs?${queryParams.toString()}`);
+      const data = await res.json();
+      setChatbotLogs(data.logs || []);
+      setLogsStats(data.stats || {
+        total_queries: 0,
+        voice_queries: 0,
+        text_queries: 0,
+        total_tokens: 0,
+        total_cost: 0
+      });
+      setLogsCurrentPage(data.pagination?.page || 1);
+      setLogsTotalPages(data.pagination?.pages || 1);
+      setLogsTotalCount(data.pagination?.total || 0);
+    } catch (err) {
+      console.error('Error fetching chatbot logs:', err);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  // Clear Chatbot Logs
+  const handleClearLogs = async () => {
+    if (!window.confirm('هل أنت متأكد من مسح جميع سجلات المحادثات؟ لا يمكن التراجع عن هذا الإجراء.')) return;
+    try {
+      const res = await authFetch(`${API_BASE_URL}/api/chatbot-logs/clear`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        setExpandedLogId(null);
+        fetchChatbotLogs(1);
+      }
+    } catch (err) {
+      console.error('Error clearing chatbot logs:', err);
     }
   };
 
@@ -887,129 +959,418 @@ export default function App() {
       {activeTab === 'admin' && userRole === 'super_admin' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
           
-          {/* User Management */}
-          <div className="glass-card" style={{ padding: '2rem' }}>
-            <h2 style={{ fontSize: '1.35rem', fontWeight: 800, marginBottom: '1.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <Shield size={22} color="var(--accent-color)" />
+          {/* Admin Inner Sub Navigation */}
+          <div style={{ display: 'flex', gap: '1rem', borderBottom: '1px solid var(--border-glass)', paddingBottom: '1rem', flexWrap: 'wrap' }}>
+            <button 
+              className={`btn ${adminSubTab === 'users' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setAdminSubTab('users')}
+            >
+              <Shield size={18} />
               إدارة مستخدمي النظام
-            </h2>
-            
-            {/* Add User Form */}
-            <form onSubmit={handleAddUser} style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.5rem', alignItems: 'flex-end' }}>
-              <div className="input-group" style={{ flexGrow: 1, minWidth: '150px' }}>
-                <label>اسم المستخدم</label>
-                <input type="text" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} required />
-              </div>
-              <div className="input-group" style={{ flexGrow: 1, minWidth: '150px' }}>
-                <label>كلمة المرور</label>
-                <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required />
-              </div>
-              <div className="input-group" style={{ minWidth: '150px' }}>
-                <label>الدور</label>
-                <select value={newRole} onChange={(e) => setNewRole(e.target.value as any)}>
-                  <option value="admin">مسؤول (Admin)</option>
-                  <option value="super_admin">مسؤول خارق (Super Admin)</option>
-                </select>
-              </div>
-              <button type="submit" className="btn btn-primary">
-                <Plus size={18} />
-                إضافة مستخدم
-              </button>
-            </form>
+            </button>
+            <button 
+              className={`btn ${adminSubTab === 'whitelist' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setAdminSubTab('whitelist')}
+            >
+              <Users size={18} />
+              القائمة البيضاء لبوت تليغرام
+            </button>
+            <button 
+              className={`btn ${adminSubTab === 'chatbot' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => {
+                setAdminSubTab('chatbot');
+                fetchChatbotLogs(1);
+              }}
+            >
+              <MessageSquare size={18} />
+              سجل المحادثات وتكلفة الذكاء الاصطناعي
+            </button>
+          </div>
 
-            {/* Users Table */}
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'right' }}>
-                <thead>
-                  <tr style={{ borderBottom: '1px solid var(--border-glass)' }}>
-                    <th style={{ padding: '0.75rem 0' }}>اسم المستخدم</th>
-                    <th style={{ padding: '0.75rem 0' }}>الدور</th>
-                    <th style={{ padding: '0.75rem 0', textAlign: 'left' }}>إجراءات</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {users.map(u => (
-                    <tr key={u.id} style={{ borderBottom: '1px solid var(--border-glass)' }}>
-                      <td style={{ padding: '0.75rem 0', fontWeight: 600 }}>{u.username}</td>
-                      <td style={{ padding: '0.75rem 0' }}>
-                        <span style={{ 
-                          fontSize: '0.8rem', 
-                          padding: '0.2rem 0.5rem', 
-                          borderRadius: '4px',
-                          background: u.role === 'super_admin' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(59, 130, 246, 0.15)',
-                          color: u.role === 'super_admin' ? '#f87171' : '#60a5fa',
-                          fontWeight: 700
-                        }}>
-                          {u.role === 'super_admin' ? 'Super Admin' : 'Admin'}
-                        </span>
-                      </td>
-                      <td style={{ padding: '0.75rem 0', textAlign: 'left' }}>
-                        {u.username !== 'superadmin' && (
-                          <button onClick={() => handleDeleteUser(u.id)} className="btn" style={{ background: 'transparent', color: '#f87171', padding: '0.25rem' }}>
+          {/* User Management Sub-Tab */}
+          {adminSubTab === 'users' && (
+            <div className="glass-card" style={{ padding: '2rem' }}>
+              <h2 style={{ fontSize: '1.35rem', fontWeight: 800, marginBottom: '1.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <Shield size={22} color="var(--accent-color)" />
+                إدارة مستخدمي النظام
+              </h2>
+              
+              {/* Add User Form */}
+              <form onSubmit={handleAddUser} style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.5rem', alignItems: 'flex-end' }}>
+                <div className="input-group" style={{ flexGrow: 1, minWidth: '150px' }}>
+                  <label>اسم المستخدم</label>
+                  <input type="text" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} required />
+                </div>
+                <div className="input-group" style={{ flexGrow: 1, minWidth: '150px' }}>
+                  <label>كلمة المرور</label>
+                  <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required />
+                </div>
+                <div className="input-group" style={{ minWidth: '150px' }}>
+                  <label>الدور</label>
+                  <select value={newRole} onChange={(e) => setNewRole(e.target.value as any)}>
+                    <option value="admin">مسؤول (Admin)</option>
+                    <option value="super_admin">مسؤول خارق (Super Admin)</option>
+                  </select>
+                </div>
+                <button type="submit" className="btn btn-primary">
+                  <Plus size={18} />
+                  إضافة مستخدم
+                </button>
+              </form>
+
+              {/* Users Table */}
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'right' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border-glass)' }}>
+                      <th style={{ padding: '0.75rem 0' }}>اسم المستخدم</th>
+                      <th style={{ padding: '0.75rem 0' }}>الدور</th>
+                      <th style={{ padding: '0.75rem 0', textAlign: 'left' }}>إجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {users.map(u => (
+                      <tr key={u.id} style={{ borderBottom: '1px solid var(--border-glass)' }}>
+                        <td style={{ padding: '0.75rem 0', fontWeight: 600 }}>{u.username}</td>
+                        <td style={{ padding: '0.75rem 0' }}>
+                          <span style={{ 
+                            fontSize: '0.8rem', 
+                            padding: '0.2rem 0.5rem', 
+                            borderRadius: '4px',
+                            background: u.role === 'super_admin' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(59, 130, 246, 0.15)',
+                            color: u.role === 'super_admin' ? '#f87171' : '#60a5fa',
+                            fontWeight: 700
+                          }}>
+                            {u.role === 'super_admin' ? 'Super Admin' : 'Admin'}
+                          </span>
+                        </td>
+                        <td style={{ padding: '0.75rem 0', textAlign: 'left' }}>
+                          {u.username !== 'superadmin' && (
+                            <button onClick={() => handleDeleteUser(u.id)} className="btn" style={{ background: 'transparent', color: '#f87171', padding: '0.25rem' }}>
+                              <Trash2 size={16} />
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Telegram Whitelist Sub-Tab */}
+          {adminSubTab === 'whitelist' && (
+            <div className="glass-card" style={{ padding: '2rem' }}>
+              <h2 style={{ fontSize: '1.35rem', fontWeight: 800, marginBottom: '1.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <Users size={22} color="var(--accent-color)" />
+                إدارة الأرقام المصرح لها بالوصول لـ Telegram Bot
+              </h2>
+
+              {/* Add Whitelist form */}
+              <form onSubmit={handleAddWhitelist} style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.5rem', alignItems: 'flex-end' }}>
+                <div className="input-group" style={{ flexGrow: 1, minWidth: '200px' }}>
+                  <label>رقم الهاتف أو المعرف (ID/Username)</label>
+                  <input type="text" value={newIdentifier} onChange={(e) => setNewIdentifier(e.target.value)} placeholder="مثال: +96170123456 أو 123456789..." required />
+                </div>
+                <div className="input-group" style={{ flexGrow: 1, minWidth: '200px' }}>
+                  <label>الوصف / الاسم</label>
+                  <input type="text" value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder="مثال: المختار فلان..." />
+                </div>
+                <button type="submit" className="btn btn-primary">
+                  <Plus size={18} />
+                  إضافة للقائمة
+                </button>
+              </form>
+
+              {/* Whitelist Table */}
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'right' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border-glass)' }}>
+                      <th style={{ padding: '0.75rem 0' }}>المعرف / رقم الهاتف</th>
+                      <th style={{ padding: '0.75rem 0' }}>الاسم والوصف</th>
+                      <th style={{ padding: '0.75rem 0' }}>تاريخ الإضافة</th>
+                      <th style={{ padding: '0.75rem 0', textAlign: 'left' }}>إجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {whitelist.map(w => (
+                      <tr key={w.id} style={{ borderBottom: '1px solid var(--border-glass)' }}>
+                        <td style={{ padding: '0.75rem 0', fontWeight: 600, fontFamily: 'var(--font-english)' }}>{w.identifier}</td>
+                        <td style={{ padding: '0.75rem 0' }}>{w.description}</td>
+                        <td style={{ padding: '0.75rem 0', fontFamily: 'var(--font-english)', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                          {new Date(w.created_at).toLocaleDateString()}
+                        </td>
+                        <td style={{ padding: '0.75rem 0', textAlign: 'left' }}>
+                          <button onClick={() => handleDeleteWhitelist(w.id)} className="btn" style={{ background: 'transparent', color: '#f87171', padding: '0.25rem' }}>
                             <Trash2 size={16} />
                           </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* Telegram Whitelist Management */}
-          <div className="glass-card" style={{ padding: '2rem' }}>
-            <h2 style={{ fontSize: '1.35rem', fontWeight: 800, marginBottom: '1.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <Users size={22} color="var(--accent-color)" />
-              إدارة الأرقام المصرح لها بالوصول لـ Telegram Bot
-            </h2>
+          {/* Chatbot Logs & AI Cost Dashboard Sub-Tab */}
+          {adminSubTab === 'chatbot' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+              
+              {/* Stats Cards */}
+              <div className="grid-stats">
+                <div className="glass-card stat-card">
+                  <div className="stat-info">
+                    <h3>إجمالي طلبات البوت</h3>
+                    <p>{logsStats.total_queries.toLocaleString()}</p>
+                  </div>
+                  <div className="stat-icon" style={{ background: 'var(--accent-gradient)' }}>
+                    <MessageSquare size={24} />
+                  </div>
+                </div>
 
-            {/* Add Whitelist form */}
-            <form onSubmit={handleAddWhitelist} style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.5rem', alignItems: 'flex-end' }}>
-              <div className="input-group" style={{ flexGrow: 1, minWidth: '200px' }}>
-                <label>رقم الهاتف أو المعرف (ID/Username)</label>
-                <input type="text" value={newIdentifier} onChange={(e) => setNewIdentifier(e.target.value)} placeholder="مثال: +96170123456 أو 123456789..." required />
+                <div className="glass-card stat-card">
+                  <div className="stat-info">
+                    <h3>الطلبات الصوتية (AI)</h3>
+                    <p>{logsStats.voice_queries.toLocaleString()}</p>
+                  </div>
+                  <div className="stat-icon" style={{ background: 'linear-gradient(135deg, #a855f7 0%, #7e22ce 100%)', boxShadow: '0 0 15px rgba(168, 85, 247, 0.35)' }}>
+                    <Mic size={24} />
+                  </div>
+                </div>
+
+                <div className="glass-card stat-card">
+                  <div className="stat-info">
+                    <h3>الرموز المستخدمة (Tokens)</h3>
+                    <p>{logsStats.total_tokens.toLocaleString()}</p>
+                  </div>
+                  <div className="stat-icon" style={{ background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)', boxShadow: '0 0 15px rgba(245, 158, 11, 0.35)' }}>
+                    <Cpu size={24} />
+                  </div>
+                </div>
+
+                <div className="glass-card stat-card">
+                  <div className="stat-info">
+                    <h3>تكلفة الذكاء الاصطناعي الكلية</h3>
+                    <p style={{ fontFamily: 'var(--font-english)', fontSize: '1.8rem' }}>
+                      ${logsStats.total_cost.toFixed(6)}
+                    </p>
+                  </div>
+                  <div className="stat-icon" style={{ background: 'var(--success-gradient)' }}>
+                    <TrendingUp size={24} />
+                  </div>
+                </div>
               </div>
-              <div className="input-group" style={{ flexGrow: 1, minWidth: '200px' }}>
-                <label>الوصف / الاسم</label>
-                <input type="text" value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder="مثال: المختار فلان..." />
-              </div>
-              <button type="submit" className="btn btn-primary">
-                <Plus size={18} />
-                إضافة للقائمة
-              </button>
-            </form>
 
-            {/* Whitelist Table */}
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'right' }}>
-                <thead>
-                  <tr style={{ borderBottom: '1px solid var(--border-glass)' }}>
-                    <th style={{ padding: '0.75rem 0' }}>المعرف / رقم الهاتف</th>
-                    <th style={{ padding: '0.75rem 0' }}>الاسم والوصف</th>
-                    <th style={{ padding: '0.75rem 0' }}>تاريخ الإضافة</th>
-                    <th style={{ padding: '0.75rem 0', textAlign: 'left' }}>إجراءات</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {whitelist.map(w => (
-                    <tr key={w.id} style={{ borderBottom: '1px solid var(--border-glass)' }}>
-                      <td style={{ padding: '0.75rem 0', fontWeight: 600, fontFamily: 'var(--font-english)' }}>{w.identifier}</td>
-                      <td style={{ padding: '0.75rem 0' }}>{w.description}</td>
-                      <td style={{ padding: '0.75rem 0', fontFamily: 'var(--font-english)', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                        {new Date(w.created_at).toLocaleDateString()}
-                      </td>
-                      <td style={{ padding: '0.75rem 0', textAlign: 'left' }}>
-                        <button onClick={() => handleDeleteWhitelist(w.id)} className="btn" style={{ background: 'transparent', color: '#f87171', padding: '0.25rem' }}>
-                          <Trash2 size={16} />
+              {/* Filter and Clear logs */}
+              <div className="glass-card" style={{ padding: '1.5rem' }}>
+                <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                  
+                  <div style={{ flexGrow: 1, minWidth: '200px' }}>
+                    <input 
+                      type="text" 
+                      value={logsSearch} 
+                      onChange={(e) => setLogsSearch(e.target.value)} 
+                      placeholder="ابحث برقم المعرف، اسم المستخدم، أو محتوى الطلب..." 
+                      style={{
+                        width: '100%',
+                        padding: '0.75rem 1rem',
+                        background: 'rgba(0,0,0,0.2)',
+                        border: '1px solid var(--border-glass)',
+                        borderRadius: '8px',
+                        color: 'var(--text-primary)',
+                        outline: 'none'
+                      }}
+                    />
+                  </div>
+
+                  <div style={{ minWidth: '150px' }}>
+                    <select 
+                      value={logsType} 
+                      onChange={(e) => setLogsType(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '0.75rem 1rem',
+                        background: 'rgba(0,0,0,0.2)',
+                        border: '1px solid var(--border-glass)',
+                        borderRadius: '8px',
+                        color: 'var(--text-primary)',
+                        outline: 'none'
+                      }}
+                    >
+                      <option value="">كل أنواع الرسائل</option>
+                      <option value="text">رسائل نصية</option>
+                      <option value="voice">رسائل صوتية</option>
+                    </select>
+                  </div>
+
+                  <button 
+                    onClick={() => fetchChatbotLogs(1)}
+                    className="btn btn-primary"
+                  >
+                    <Search size={18} />
+                    تطبيق الفلترة
+                  </button>
+
+                  <button 
+                    onClick={handleClearLogs}
+                    className="btn"
+                    style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.25)' }}
+                  >
+                    <Trash2 size={18} />
+                    مسح السجل بالكامل
+                  </button>
+
+                  <div style={{ marginRight: 'auto', display: 'flex', alignItems: 'center', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                    تم العثور على: <span style={{ color: 'var(--text-primary)', margin: '0 0.25rem', fontFamily: 'var(--font-english)', fontSize: '1.2rem', fontWeight: 800 }}>{logsTotalCount.toLocaleString()}</span> طلب
+                  </div>
+                </div>
+              </div>
+
+              {/* Table View */}
+              {logsLoading ? (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}>
+                  <div style={{ 
+                    border: '4px solid rgba(255,255,255,0.1)', 
+                    borderTop: '4px solid var(--accent-color)', 
+                    borderRadius: '50%', 
+                    width: '40px', 
+                    height: '40px', 
+                    animation: 'spin 1s linear infinite' 
+                  }} />
+                </div>
+              ) : chatbotLogs.length === 0 ? (
+                <div className="glass-card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                  <ShieldAlert size={48} style={{ marginBottom: '1rem', color: 'var(--text-secondary)' }} />
+                  <p>لا يوجد أي سجلات محادثة مطابقة للبحث.</p>
+                </div>
+              ) : (
+                <div>
+                  <div className="glass-card results-section">
+                    <table className="voters-table">
+                      <thead>
+                        <tr>
+                          <th>التاريخ والوقت</th>
+                          <th>المعرّف (المستخدم)</th>
+                          <th>النوع</th>
+                          <th>الطلب / النص المستخرج</th>
+                          <th>رد البوت (النتائج)</th>
+                          <th>الرموز (Tokens)</th>
+                          <th>التكلفة المقدرة</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {chatbotLogs.map((log) => (
+                          <tr key={log.id}>
+                            <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-english)' }}>
+                              {new Date(log.created_at).toLocaleString('ar-LB')}
+                            </td>
+                            <td>
+                              <span style={{ fontWeight: 600, fontFamily: 'var(--font-english)' }}>{log.chat_id}</span>
+                              {log.username && (
+                                <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginRight: '0.25rem', fontFamily: 'var(--font-english)' }}>
+                                  (@{log.username})
+                                </span>
+                              )}
+                            </td>
+                            <td>
+                              <span style={{ 
+                                display: 'inline-flex', 
+                                alignItems: 'center', 
+                                gap: '0.25rem',
+                                padding: '0.25rem 0.5rem',
+                                borderRadius: '4px',
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                background: log.message_type === 'voice' ? 'rgba(168, 85, 247, 0.15)' : 'rgba(59, 130, 246, 0.15)',
+                                color: log.message_type === 'voice' ? '#c084fc' : '#60a5fa'
+                              }}>
+                                {log.message_type === 'voice' ? <Mic size={12} /> : <FileText size={12} />}
+                                {log.message_type === 'voice' ? 'صوت' : 'نص'}
+                              </span>
+                            </td>
+                            <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={log.query_text}>
+                              {log.query_text}
+                            </td>
+                            <td>
+                              <button 
+                                onClick={() => setExpandedLogId(expandedLogId === log.id ? null : log.id)}
+                                className="btn btn-secondary"
+                                style={{ padding: '0.25rem 0.5rem', fontSize: '0.8rem' }}
+                              >
+                                {expandedLogId === log.id ? 'إخفاء الرد' : 'عرض الرد'}
+                              </button>
+                            </td>
+                            <td style={{ fontFamily: 'var(--font-english)', fontSize: '0.9rem' }}>
+                              {log.message_type === 'voice' ? `${log.prompt_tokens} / ${log.completion_tokens}` : '0'}
+                            </td>
+                            <td style={{ fontFamily: 'var(--font-english)', fontWeight: 600, color: log.message_type === 'voice' ? 'var(--success-color)' : 'var(--text-secondary)' }}>
+                              ${parseFloat(log.estimated_cost).toFixed(6)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Expanded Response Area */}
+                  {expandedLogId !== null && (
+                    <div className="glass-card" style={{ padding: '1.5rem', marginTop: '1rem', border: '1px solid var(--accent-color)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                        <h4 style={{ fontSize: '1rem', fontWeight: 700 }}>تفاصيل الرد للمعرّف: {chatbotLogs.find(l => l.id === expandedLogId)?.chat_id}</h4>
+                        <button onClick={() => setExpandedLogId(null)} className="btn btn-secondary" style={{ padding: '0.25rem 0.5rem', fontSize: '0.8rem' }}>إغلاق</button>
+                      </div>
+                      <pre style={{ 
+                        whiteSpace: 'pre-wrap', 
+                        background: 'rgba(0,0,0,0.3)', 
+                        padding: '1rem', 
+                        borderRadius: '8px', 
+                        fontFamily: 'inherit',
+                        fontSize: '0.95rem',
+                        lineHeight: '1.6',
+                        color: 'var(--text-primary)',
+                        maxHeight: '300px',
+                        overflowY: 'auto'
+                      }}>
+                        {chatbotLogs.find(l => l.id === expandedLogId)?.response_text}
+                      </pre>
+                    </div>
+                  )}
+
+                  {/* Pagination */}
+                  {logsTotalPages > 1 && (
+                    <div className="pagination" style={{ marginTop: '1.5rem' }}>
+                      <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                        الصفحة <span className="page-num" style={{ color: 'var(--text-primary)' }}>{logsCurrentPage}</span> من <span className="page-num" style={{ color: 'var(--text-primary)' }}>{logsTotalPages}</span>
+                      </div>
+                      <div className="pagination-btn-group">
+                        <button 
+                          className="btn btn-secondary" 
+                          onClick={() => fetchChatbotLogs(logsCurrentPage - 1)}
+                          disabled={logsCurrentPage === 1}
+                          style={{ padding: '0.5rem 1rem', opacity: logsCurrentPage === 1 ? 0.5 : 1 }}
+                        >
+                          <ChevronRight size={18} />
+                          السابق
                         </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        <button 
+                          className="btn btn-secondary" 
+                          onClick={() => fetchChatbotLogs(logsCurrentPage + 1)}
+                          disabled={logsCurrentPage === logsTotalPages}
+                          style={{ padding: '0.5rem 1rem', opacity: logsCurrentPage === logsTotalPages ? 0.5 : 1 }}
+                        >
+                          التالي
+                          <ChevronLeft size={18} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          </div>
+          )}
 
         </div>
       )}

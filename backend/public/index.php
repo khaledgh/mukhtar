@@ -470,6 +470,117 @@ $app->delete('/api/whitelist/{id}', function (Request $request, Response $respon
     }
 });
 
+// Route: Get Chatbot Logs (Super Admin only)
+$app->get('/api/chatbot-logs', function (Request $request, Response $response) {
+    $user = checkAuth($request);
+    if (!$user || $user['role'] !== 'super_admin') {
+        $response->getBody()->write(json_encode(['error' => 'Forbidden']));
+        return $response->withStatus(403)->withHeader('Content-Type', 'application/json');
+    }
+
+    try {
+        $params = $request->getQueryParams();
+        $page = isset($params['page']) ? (int)$params['page'] : 1;
+        $limit = isset($params['limit']) ? (int)$params['limit'] : 20;
+        if ($page < 1) $page = 1;
+        if ($limit < 1 || $limit > 100) $limit = 20;
+        $offset = ($page - 1) * $limit;
+
+        $pdo = getPDO();
+        
+        $conditions = [];
+        $bindings = [];
+
+        // Filter by search query
+        if (!empty($params['q'])) {
+            $q = trim($params['q']);
+            $conditions[] = "(chat_id LIKE :q OR username LIKE :q OR query_text LIKE :q OR response_text LIKE :q)";
+            $bindings['q'] = '%' . $q . '%';
+        }
+
+        // Filter by message type
+        if (!empty($params['type']) && in_array($params['type'], ['text', 'voice'])) {
+            $conditions[] = "message_type = :type";
+            $bindings['type'] = $params['type'];
+        }
+
+        $whereClause = "";
+        if (count($conditions) > 0) {
+            $whereClause = "WHERE " . implode(" AND ", $conditions);
+        }
+
+        // Get total matching count
+        $countStmt = $pdo->prepare("SELECT COUNT(*) as total FROM chatbot_logs $whereClause");
+        $countStmt->execute($bindings);
+        $total = (int)$countStmt->fetch()['total'];
+
+        // Get paginated logs
+        $logsStmt = $pdo->prepare("SELECT id, chat_id, username, message_type, query_text, response_text, prompt_tokens, completion_tokens, estimated_cost, created_at 
+            FROM chatbot_logs $whereClause 
+            ORDER BY created_at DESC 
+            LIMIT :limit OFFSET :offset");
+        foreach ($bindings as $key => $val) {
+            $logsStmt->bindValue(":$key", $val);
+        }
+        $logsStmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $logsStmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $logsStmt->execute();
+        $logs = $logsStmt->fetchAll();
+
+        // Get general stats
+        $statsStmt = $pdo->query("SELECT 
+            COUNT(*) as total_queries,
+            SUM(CASE WHEN message_type = 'voice' THEN 1 ELSE 0 END) as voice_queries,
+            SUM(CASE WHEN message_type = 'text' THEN 1 ELSE 0 END) as text_queries,
+            SUM(prompt_tokens + completion_tokens) as total_tokens,
+            SUM(estimated_cost) as total_cost
+            FROM chatbot_logs");
+        $stats = $statsStmt->fetch();
+
+        $data = [
+            'logs' => $logs,
+            'stats' => [
+                'total_queries' => (int)($stats['total_queries'] ?? 0),
+                'voice_queries' => (int)($stats['voice_queries'] ?? 0),
+                'text_queries' => (int)($stats['text_queries'] ?? 0),
+                'total_tokens' => (int)($stats['total_tokens'] ?? 0),
+                'total_cost' => (float)($stats['total_cost'] ?? 0.0)
+            ],
+            'pagination' => [
+                'page' => $page,
+                'limit' => $limit,
+                'pages' => (int)ceil($total / $limit),
+                'total' => $total
+            ]
+        ];
+
+        $response->getBody()->write(json_encode($data, JSON_UNESCAPED_UNICODE));
+        return $response->withHeader('Content-Type', 'application/json');
+    } catch (\Exception $e) {
+        $response->getBody()->write(json_encode(['error' => $e->getMessage()]));
+        return $response->withStatus(500)->withHeader('Content-Type', 'application/json');
+    }
+});
+
+// Route: Clear Chatbot Logs (Super Admin only)
+$app->delete('/api/chatbot-logs/clear', function (Request $request, Response $response) {
+    $user = checkAuth($request);
+    if (!$user || $user['role'] !== 'super_admin') {
+        $response->getBody()->write(json_encode(['error' => 'Forbidden']));
+        return $response->withStatus(403)->withHeader('Content-Type', 'application/json');
+    }
+
+    try {
+        $pdo = getPDO();
+        $pdo->exec("TRUNCATE TABLE chatbot_logs");
+        $response->getBody()->write(json_encode(['success' => true]));
+        return $response->withHeader('Content-Type', 'application/json');
+    } catch (\Exception $e) {
+        $response->getBody()->write(json_encode(['error' => $e->getMessage()]));
+        return $response->withStatus(500)->withHeader('Content-Type', 'application/json');
+    }
+});
+
 // Helper for Telegram Whitelist Checks
 function isTelegramWhitelisted($chatId, $username) {
     try {
@@ -528,9 +639,43 @@ function callGeminiWebhook(array $parts) {
     
     if ($response) {
         $resData = json_decode($response, true);
-        return $resData['candidates'][0]['content']['parts'][0]['text'] ?? null;
+        $text = $resData['candidates'][0]['content']['parts'][0]['text'] ?? null;
+        $usage = $resData['usageMetadata'] ?? [];
+        $promptTokens = $usage['promptTokenCount'] ?? 0;
+        $completionTokens = $usage['candidatesTokenCount'] ?? 0;
+        return [
+            'text' => $text ? trim($text) : null,
+            'prompt_tokens' => $promptTokens,
+            'completion_tokens' => $completionTokens
+        ];
     }
     return null;
+}
+
+// Helper to log chatbot interaction in database
+function logChatbotInteraction($chatId, $username, $messageType, $queryText, $responseText, $promptTokens = 0, $completionTokens = 0) {
+    try {
+        $inputRate = 0.000000075; // $0.075 per 1M tokens
+        $outputRate = 0.00000030; // $0.30 per 1M tokens
+        $estimatedCost = ($promptTokens * $inputRate) + ($completionTokens * $outputRate);
+        
+        $pdo = getPDO();
+        $stmt = $pdo->prepare("INSERT INTO chatbot_logs 
+            (chat_id, username, message_type, query_text, response_text, prompt_tokens, completion_tokens, estimated_cost) 
+            VALUES (:chat_id, :username, :message_type, :query_text, :response_text, :prompt_tokens, :completion_tokens, :estimated_cost)");
+        $stmt->execute([
+            'chat_id' => strval($chatId),
+            'username' => $username,
+            'message_type' => $messageType,
+            'query_text' => $queryText,
+            'response_text' => $responseText,
+            'prompt_tokens' => (int)$promptTokens,
+            'completion_tokens' => (int)$completionTokens,
+            'estimated_cost' => $estimatedCost
+        ]);
+    } catch (\Exception $e) {
+        error_log("Failed to log chatbot interaction: " . $e->getMessage());
+    }
 }
 
 // Helper to send Telegram Message in Webhook
@@ -595,6 +740,8 @@ $app->post('/api/telegram-webhook', function (Request $request, Response $respon
     
     $queryText = null;
     $isVoice = false;
+    $promptTokens = 0;
+    $completionTokens = 0;
     
     // Load Token
     $env = [];
@@ -636,19 +783,30 @@ $app->post('/api/telegram-webhook', function (Request $request, Response $respon
                 ]
             ];
             
-            $queryText = callGeminiWebhook($parts);
-            if ($queryText) {
+            $geminiRes = callGeminiWebhook($parts);
+            if ($geminiRes && isset($geminiRes['text'])) {
+                $queryText = $geminiRes['text'];
+                $promptTokens = $geminiRes['prompt_tokens'];
+                $completionTokens = $geminiRes['completion_tokens'];
                 sendTelegramMessageWebhook($chatId, "📝 <b>النص المستخرج:</b>\n<i>\"" . htmlspecialchars($queryText) . "\"</i>");
+            } else {
+                $reply = "⚠️ فشل استخراج النص بالذكاء الاصطناعي.";
+                sendTelegramMessageWebhook($chatId, $reply);
+                logChatbotInteraction($chatId, $username, 'voice', '[Voice Note (transcription failed)]', $reply, 0, 0);
             }
         } else {
-            sendTelegramMessageWebhook($chatId, "⚠️ فشل تحميل الملف الصوتي.");
+            $reply = "⚠️ فشل تحميل الملف الصوتي.";
+            sendTelegramMessageWebhook($chatId, $reply);
+            logChatbotInteraction($chatId, $username, 'voice', '[Voice Note (download failed)]', $reply, 0, 0);
         }
     }
     // 3. Handle Text queries
     elseif (isset($message['text'])) {
         $text = trim($message['text']);
         if ($text === '/start') {
-            sendTelegramMessageWebhook($chatId, "👋 أهلاً بك في <b>نظام استعلام المواطنين</b>.\nيمكنك إرسال رسالة نصية أو تسجيل صوتي باسم المواطن المستعلم عنه للحصول على تفاصيله بالكامل.");
+            $reply = "👋 أهلاً بك في <b>نظام استعلام المواطنين</b>.\nيمكنك إرسال رسالة نصية أو تسجيل صوتي باسم المواطن المستعلم عنه للحصول على تفاصيله بالكامل.";
+            sendTelegramMessageWebhook($chatId, $reply);
+            logChatbotInteraction($chatId, $username, 'text', '/start', $reply, 0, 0);
             return $response;
         }
         $queryText = $text;
@@ -659,6 +817,8 @@ $app->post('/api/telegram-webhook', function (Request $request, Response $respon
         if (!$isVoice) {
             sendTelegramMessageWebhook($chatId, "🔄 جاري البحث في السجلات...");
         }
+        
+        $msgType = $isVoice ? 'voice' : 'text';
         
         try {
             $pdo = getPDO();
@@ -705,12 +865,21 @@ $app->post('/api/telegram-webhook', function (Request $request, Response $respon
                             $reply .= "──────────────────\n";
                         }
                         sendTelegramMessageWebhook($chatId, $reply);
+                        logChatbotInteraction($chatId, $username, $msgType, $queryText, $reply, $promptTokens, $completionTokens);
                     } else {
-                        sendTelegramMessageWebhook($chatId, "❌ لم يتم العثور على أي مواطن يطابق معايير البحث.");
+                        $reply = "❌ لم يتم العثور على أي مواطن يطابق معايير البحث.";
+                        sendTelegramMessageWebhook($chatId, $reply);
+                        logChatbotInteraction($chatId, $username, $msgType, $queryText, $reply, $promptTokens, $completionTokens);
                     }
+                } else {
+                    $reply = "❌ الرجاء كتابة معايير بحث واضحة.";
+                    sendTelegramMessageWebhook($chatId, $reply);
+                    logChatbotInteraction($chatId, $username, $msgType, $queryText, $reply, $promptTokens, $completionTokens);
                 }
             } else {
-                sendTelegramMessageWebhook($chatId, "❌ الرجاء كتابة معايير بحث واضحة.");
+                $reply = "❌ الرجاء كتابة معايير بحث واضحة.";
+                sendTelegramMessageWebhook($chatId, $reply);
+                logChatbotInteraction($chatId, $username, $msgType, $queryText, $reply, $promptTokens, $completionTokens);
             }
         } catch (\Exception $ex) {
             sendTelegramMessageWebhook($chatId, "⚠️ حدث خطأ في قاعدة البيانات أثناء معالجة الطلب.");
