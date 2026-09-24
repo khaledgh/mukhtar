@@ -24,6 +24,9 @@ class ArabicNormalizer {
         
         $text = preg_replace('/[' . implode('', $diacritics) . ']/u', '', $text);
 
+        // Replace double alef in Allah (االله -> الله)
+        $text = preg_replace('/ا+لله/u', 'الله', $text);
+
         // Replace Alef forms (أ, إ, آ) with bare Alef (ا)
         $text = preg_replace('/[أإآ]/u', 'ا', $text);
 
@@ -37,5 +40,32 @@ class ArabicNormalizer {
         $text = preg_replace('/\s+/u', ' ', $text);
 
         return trim($text);
+    }
+
+    /**
+     * Extracts compound name variants (e.g. عبدالله <-> عبد الله).
+     */
+    public static function extractCompoundVariants(string $text): array {
+        $norm = self::normalize($text);
+        if ($norm === '') {
+            return [];
+        }
+        $variants = [$norm];
+
+        if (mb_strpos($norm, 'عبد') === 0 && mb_strlen($norm) > 4) {
+            $rest = trim(mb_substr($norm, 3));
+            $variants[] = 'عبد ' . $rest;
+            $variants[] = $rest;
+        } elseif (mb_strpos($norm, 'ابو') === 0 && mb_strlen($norm) > 4) {
+            $rest = trim(mb_substr($norm, 3));
+            $variants[] = 'ابو ' . $rest;
+            $variants[] = $rest;
+        } elseif (mb_strpos($norm, 'عبد ') === 0) {
+            $rest = trim(mb_substr($norm, 4));
+            $variants[] = 'عبد' . $rest;
+            $variants[] = $rest;
+        }
+
+        return array_values(array_unique($variants));
     }
 }

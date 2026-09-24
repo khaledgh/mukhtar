@@ -202,9 +202,16 @@ $app->get('/api/voters', function (Request $request, Response $response) {
             foreach ($words as $idx => $word) {
                 $word = trim($word);
                 if ($word !== '') {
-                    $paramName = "q_word_" . $idx;
-                    $wordConditions[] = "(normalized_name LIKE :$paramName OR normalized_father_name LIKE :$paramName OR normalized_mother_name LIKE :$paramName OR registry_no LIKE :$paramName)";
-                    $bindings[$paramName] = '%' . $word . '%';
+                    $variants = ArabicNormalizer::extractCompoundVariants($word);
+                    $subConditions = [];
+                    foreach ($variants as $vIdx => $v) {
+                        $paramName = "q_word_{$idx}_{$vIdx}";
+                        $subConditions[] = "(normalized_name LIKE :$paramName OR normalized_father_name LIKE :$paramName OR normalized_mother_name LIKE :$paramName OR registry_no LIKE :$paramName)";
+                        $bindings[$paramName] = '%' . $v . '%';
+                    }
+                    if (!empty($subConditions)) {
+                        $wordConditions[] = "(" . implode(" OR ", $subConditions) . ")";
+                    }
                 }
             }
             if (count($wordConditions) > 0) {
@@ -218,9 +225,16 @@ $app->get('/api/voters', function (Request $request, Response $response) {
             foreach ($words as $idx => $word) {
                 $word = trim($word);
                 if ($word !== '') {
-                    $paramName = "adv_name_" . $idx;
-                    $conditions[] = "normalized_name LIKE :$paramName";
-                    $bindings[$paramName] = '%' . $word . '%';
+                    $variants = ArabicNormalizer::extractCompoundVariants($word);
+                    $subConds = [];
+                    foreach ($variants as $vIdx => $v) {
+                        $paramName = "adv_name_{$idx}_{$vIdx}";
+                        $subConds[] = "normalized_name LIKE :$paramName";
+                        $bindings[$paramName] = '%' . $v . '%';
+                    }
+                    if (!empty($subConds)) {
+                        $conditions[] = "(" . implode(" OR ", $subConds) . ")";
+                    }
                 }
             }
         }
@@ -231,9 +245,16 @@ $app->get('/api/voters', function (Request $request, Response $response) {
             foreach ($words as $idx => $word) {
                 $word = trim($word);
                 if ($word !== '') {
-                    $paramName = "adv_father_" . $idx;
-                    $conditions[] = "normalized_father_name LIKE :$paramName";
-                    $bindings[$paramName] = '%' . $word . '%';
+                    $variants = ArabicNormalizer::extractCompoundVariants($word);
+                    $subConds = [];
+                    foreach ($variants as $vIdx => $v) {
+                        $paramName = "adv_father_{$idx}_{$vIdx}";
+                        $subConds[] = "normalized_father_name LIKE :$paramName";
+                        $bindings[$paramName] = '%' . $v . '%';
+                    }
+                    if (!empty($subConds)) {
+                        $conditions[] = "(" . implode(" OR ", $subConds) . ")";
+                    }
                 }
             }
         }
@@ -244,9 +265,16 @@ $app->get('/api/voters', function (Request $request, Response $response) {
             foreach ($words as $idx => $word) {
                 $word = trim($word);
                 if ($word !== '') {
-                    $paramName = "adv_mother_" . $idx;
-                    $conditions[] = "normalized_mother_name LIKE :$paramName";
-                    $bindings[$paramName] = '%' . $word . '%';
+                    $variants = ArabicNormalizer::extractCompoundVariants($word);
+                    $subConds = [];
+                    foreach ($variants as $vIdx => $v) {
+                        $paramName = "adv_mother_{$idx}_{$vIdx}";
+                        $subConds[] = "normalized_mother_name LIKE :$paramName";
+                        $bindings[$paramName] = '%' . $v . '%';
+                    }
+                    if (!empty($subConds)) {
+                        $conditions[] = "(" . implode(" OR ", $subConds) . ")";
+                    }
                 }
             }
         }
@@ -581,6 +609,118 @@ $app->delete('/api/chatbot-logs/clear', function (Request $request, Response $re
     }
 });
 
+// Route: System 1-Click Fix & Diagnostic (Super Admin only)
+$app->post('/api/system/fix', function (Request $request, Response $response) {
+    $user = checkAuth($request);
+    if (!$user || $user['role'] !== 'super_admin') {
+        $response->getBody()->write(json_encode(['error' => 'Forbidden']));
+        return $response->withStatus(403)->withHeader('Content-Type', 'application/json');
+    }
+
+    try {
+        $pdo = getPDO();
+        $report = [];
+
+        // 1. Fix double-Alef 'االله' across voters table
+        $doubleAlefFixed = 0;
+        $u1 = $pdo->exec("UPDATE voters SET name = REPLACE(name, '\u{0627}\u{0627}\u{0644}\u{0644}\u{0647}', '\u{0627}\u{0644}\u{0644}\u{0647}') WHERE name LIKE '%\u{0627}\u{0627}\u{0644}\u{0644}\u{0647}%'");
+        $u2 = $pdo->exec("UPDATE voters SET normalized_name = REPLACE(normalized_name, '\u{0627}\u{0627}\u{0644}\u{0644}\u{0647}', '\u{0627}\u{0644}\u{0644}\u{0647}') WHERE normalized_name LIKE '%\u{0627}\u{0627}\u{0644}\u{0644}\u{0647}%'");
+        $u3 = $pdo->exec("UPDATE voters SET father_name = REPLACE(father_name, '\u{0627}\u{0627}\u{0644}\u{0644}\u{0647}', '\u{0627}\u{0644}\u{0644}\u{0647}') WHERE father_name LIKE '%\u{0627}\u{0627}\u{0644}\u{0644}\u{0647}%'");
+        $u4 = $pdo->exec("UPDATE voters SET normalized_father_name = REPLACE(normalized_father_name, '\u{0627}\u{0627}\u{0644}\u{0644}\u{0647}', '\u{0627}\u{0644}\u{0644}\u{0647}') WHERE normalized_father_name LIKE '%\u{0627}\u{0627}\u{0644}\u{0644}\u{0647}%'");
+        $u5 = $pdo->exec("UPDATE voters SET mother_name = REPLACE(mother_name, '\u{0627}\u{0627}\u{0644}\u{0644}\u{0647}', '\u{0627}\u{0644}\u{0644}\u{0647}') WHERE mother_name LIKE '%\u{0627}\u{0627}\u{0644}\u{0644}\u{0647}%'");
+        $u6 = $pdo->exec("UPDATE voters SET normalized_mother_name = REPLACE(normalized_mother_name, '\u{0627}\u{0627}\u{0644}\u{0644}\u{0647}', '\u{0627}\u{0644}\u{0644}\u{0647}') WHERE normalized_mother_name LIKE '%\u{0627}\u{0627}\u{0644}\u{0644}\u{0647}%'");
+        $doubleAlefFixed = ($u1 ?: 0) + ($u2 ?: 0) + ($u3 ?: 0) + ($u4 ?: 0) + ($u5 ?: 0) + ($u6 ?: 0);
+        $report['db_double_alef_cleaned'] = $doubleAlefFixed;
+
+        // 2. Ensure Telegram bot webhook is checked & cleared if broken
+        $env = [];
+        $envPath = __DIR__ . '/../.env';
+        if (file_exists($envPath)) {
+            $lines = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            foreach ($lines as $line) {
+                if (strpos(trim($line), '#') === 0) continue;
+                $p = explode('=', $line, 2);
+                if (count($p) === 2) {
+                    $env[trim($p[0])] = trim($p[1], " \t\n\r\0\x0B\"'");
+                }
+            }
+        }
+        $botToken = $env['TELEGRAM_BOT_TOKEN'] ?? '';
+        $telegramStatus = 'لم يتم تحديد توكن تليغرام';
+        $botUsername = null;
+
+        if (!empty($botToken)) {
+            $meUrl = "https://api.telegram.org/bot{$botToken}/getMe";
+            $meRes = @file_get_contents($meUrl);
+            if ($meRes) {
+                $meData = json_decode($meRes, true);
+                if (!empty($meData['ok'])) {
+                    $botUsername = '@' . ($meData['result']['username'] ?? '');
+                }
+            }
+
+            $delUrl = "https://api.telegram.org/bot{$botToken}/deleteWebhook";
+            $delRes = @file_get_contents($delUrl);
+            if ($delRes) {
+                $delData = json_decode($delRes, true);
+                if (!empty($delData['ok'])) {
+                    $telegramStatus = 'تم تصفية الويب هوك المعلق بنجاح - البوت جاهز للاستقبال والبحث بدون تعارض';
+                } else {
+                    $telegramStatus = $delData['description'] ?? 'تم فحص حالة الويب هوك';
+                }
+            }
+        }
+        $report['telegram_status'] = $telegramStatus;
+        $report['telegram_bot'] = $botUsername;
+
+        // 3. Ensure Whitelist default identifiers exist
+        $pdo->exec("INSERT IGNORE INTO telegram_whitelist (identifier, description) VALUES ('263844931', 'خالد الغوراني'), ('6538993902', 'Samer Ajaj')");
+        $whitelistStmt = $pdo->query("SELECT COUNT(*) as cnt FROM telegram_whitelist");
+        $report['whitelist_count'] = (int)$whitelistStmt->fetch()['cnt'];
+
+        // 4. Test Gemini AI
+        $geminiKey = $env['GEMINI_API_KEY'] ?? '';
+        $geminiStatus = 'غير مفعل';
+        if (!empty($geminiKey) && $geminiKey !== 'YOUR_GEMINI_API_KEY_HERE') {
+            $t0 = microtime(true);
+            $testUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" . $geminiKey;
+            $payload = ['contents' => [['parts' => [['text' => 'ping']]]]];
+            $ch = curl_init($testUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+            curl_setopt($ch, CURLOPT_TIMEOUT, 6);
+            $gRes = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            $latency = round((microtime(true) - $t0) * 1000);
+
+            if ($httpCode === 200) {
+                $geminiStatus = "متصل بنجاح (gemini-2.5-flash) - زمن الاستجابة: {$latency}ms";
+            } else {
+                $geminiStatus = "خطأ في الاتصال (كود HTTP {$httpCode})";
+            }
+        }
+        $report['gemini_status'] = $geminiStatus;
+
+        // 5. Total voters count in DB
+        $votersCountStmt = $pdo->query("SELECT COUNT(*) as cnt FROM voters");
+        $report['total_voters'] = (int)$votersCountStmt->fetch()['cnt'];
+
+        $resData = [
+            'success' => true,
+            'message' => 'تم تطبيق جميع الإصلاحات وفحص النظام بنجاح بضغطة زر واحدة!',
+            'report' => $report
+        ];
+        $response->getBody()->write(json_encode($resData, JSON_UNESCAPED_UNICODE));
+        return $response->withHeader('Content-Type', 'application/json');
+    } catch (\Exception $e) {
+        $response->getBody()->write(json_encode(['error' => $e->getMessage()]));
+        return $response->withStatus(500)->withHeader('Content-Type', 'application/json');
+    }
+});
+
 // Helper for Telegram Whitelist Checks
 function isTelegramWhitelisted($chatId, $username) {
     try {
@@ -711,6 +851,62 @@ function sendTelegramMessageWebhook($chatId, $text) {
     curl_close($ch);
 }
 
+// Helper to call Gemini to parse user query in Webhook
+function parseQueryWithGeminiWebhook($queryText) {
+    $env = [];
+    $envPath = __DIR__ . '/../.env';
+    if (file_exists($envPath)) {
+        $lines = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        foreach ($lines as $line) {
+            if (strpos(trim($line), '#') === 0) continue;
+            $p = explode('=', $line, 2);
+            if (count($p) === 2) {
+                $env[trim($p[0])] = trim($p[1], " \t\n\r\0\x0B\"'");
+            }
+        }
+    }
+    
+    $geminiKey = $env['GEMINI_API_KEY'] ?? '';
+    if (empty($geminiKey) || $geminiKey === 'YOUR_GEMINI_API_KEY_HERE') {
+        return null;
+    }
+    
+    $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" . $geminiKey;
+    $systemInstruction = "أنت مساعد ذكي لاستخراج وتحليل أسماء الناخبين في السجلات اللبنانية. حلل رسالة البحث وأعد كود JSON يحتوي على: first_name, father_name, mother_name, family_name, registry_no, village, search_tokens (قائمة بكلمات البحث مع دمج وفصل الأسماء المركبة مثل عبدالله وعبد الله). أعد فقط JSON صالح بدون markdown.";
+    
+    $payload = [
+        'contents' => [['parts' => [['text' => $queryText]]]],
+        'systemInstruction' => ['parts' => [['text' => $systemInstruction]]],
+        'generationConfig' => ['responseMimeType' => 'application/json']
+    ];
+    
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+    curl_setopt($ch, CURLOPT_TIMEOUT, 8);
+    $response = curl_exec($ch);
+    curl_close($ch);
+    
+    if ($response) {
+        $resData = json_decode($response, true);
+        $text = $resData['candidates'][0]['content']['parts'][0]['text'] ?? null;
+        $usage = $resData['usageMetadata'] ?? [];
+        if ($text) {
+            $parsed = json_decode($text, true);
+            if ($parsed) {
+                return [
+                    'data' => $parsed,
+                    'prompt_tokens' => $usage['promptTokenCount'] ?? 0,
+                    'completion_tokens' => $usage['candidatesTokenCount'] ?? 0
+                ];
+            }
+        }
+    }
+    return null;
+}
+
 // Webhook Route for Telegram
 $app->post('/api/telegram-webhook', function (Request $request, Response $response) {
     $body = json_decode($request->getBody()->getContents(), true);
@@ -725,10 +921,11 @@ $app->post('/api/telegram-webhook', function (Request $request, Response $respon
     
     $chatId = $message['chat']['id'] ?? '';
     $username = $message['from']['username'] ?? null;
+    $firstName = $message['from']['first_name'] ?? 'مستخدم';
     
     // 1. Authorization check
     if (!isTelegramWhitelisted($chatId, $username)) {
-        $msg = "⚠️ <b>عذراً، هذا الحساب غير مصرح له بالدخول.</b>\n";
+        $msg = "⚠️ <b>عذراً يا " . htmlspecialchars($firstName) . "، هذا الحساب غير مصرح له بالدخول.</b>\n\n";
         $msg .= "يرجى الطلب من المسؤول إدخال معرفك الخاص بالوصول:\n";
         $msg .= "<code>" . htmlspecialchars($chatId) . "</code>";
         if ($username) {
@@ -752,7 +949,7 @@ $app->post('/api/telegram-webhook', function (Request $request, Response $respon
             if (strpos(trim($line), '#') === 0) continue;
             $p = explode('=', $line, 2);
             if (count($p) === 2) {
-                $env[trim($p[0])] = trim($p[1]);
+                $env[trim($p[0])] = trim($p[1], " \t\n\r\0\x0B\"'");
             }
         }
     }
@@ -762,7 +959,7 @@ $app->post('/api/telegram-webhook', function (Request $request, Response $respon
     if (isset($message['voice'])) {
         $isVoice = true;
         $fileId = $message['voice']['file_id'];
-        sendTelegramMessageWebhook($chatId, "🎙️ جاري تحميل المقطع الصوتي وتحليله بالذكاء الاصطناعي...");
+        sendTelegramMessageWebhook($chatId, "🎙️ <i>جاري تحميل المقطع الصوتي وتحليله بالذكاء الاصطناعي...</i>");
         
         $fileUrl = "https://api.telegram.org/bot{$botToken}/getFile?file_id={$fileId}";
         $fileRes = file_get_contents($fileUrl);
@@ -790,7 +987,7 @@ $app->post('/api/telegram-webhook', function (Request $request, Response $respon
                 $completionTokens = $geminiRes['completion_tokens'];
                 sendTelegramMessageWebhook($chatId, "📝 <b>النص المستخرج:</b>\n<i>\"" . htmlspecialchars($queryText) . "\"</i>");
             } else {
-                $reply = "⚠️ فشل استخراج النص بالذكاء الاصطناعي.";
+                $reply = "⚠️ تعذر استخراج النص بالذكاء الاصطناعي بدقة.";
                 sendTelegramMessageWebhook($chatId, $reply);
                 logChatbotInteraction($chatId, $username, 'voice', '[Voice Note (transcription failed)]', $reply, 0, 0);
             }
@@ -803,86 +1000,171 @@ $app->post('/api/telegram-webhook', function (Request $request, Response $respon
     // 3. Handle Text queries
     elseif (isset($message['text'])) {
         $text = trim($message['text']);
-        if ($text === '/start') {
-            $reply = "👋 أهلاً بك في <b>نظام استعلام المواطنين</b>.\nيمكنك إرسال رسالة نصية أو تسجيل صوتي باسم المواطن المستعلم عنه للحصول على تفاصيله بالكامل.";
+        if ($text === '/start' || $text === '/help') {
+            $reply = "👋 أهلاً بك في <b>نظام استعلام سجلات الناخبين الذكي</b>.\n\n" .
+                     "• أرسل اسم المواطن كاملاً (مثل: <code>حليمة عبدالقادر حمزة</code>)\n" .
+                     "• يدعم النظام الأسماء المركبة (مثل: <code>عبد الله</code> أو <code>عبدالله</code>)\n" .
+                     "• يمكنك أيضاً إرسال <b>تسجيل صوتي 🎙️</b> بالاسم مباشرةً.";
             sendTelegramMessageWebhook($chatId, $reply);
-            logChatbotInteraction($chatId, $username, 'text', '/start', $reply, 0, 0);
+            logChatbotInteraction($chatId, $username, 'text', $text, $reply, 0, 0);
             return $response;
         }
         $queryText = $text;
     }
     
-    // 4. Run Search
+    // 4. Run Search with AI and Smart expansion
     if (!empty($queryText)) {
         if (!$isVoice) {
-            sendTelegramMessageWebhook($chatId, "🔄 جاري البحث في السجلات...");
+            sendTelegramMessageWebhook($chatId, "🔄 <i>جاري البحث في السجلات وتحليل الاسم بالذكاء الاصطناعي...</i>");
         }
         
         $msgType = $isVoice ? 'voice' : 'text';
         
         try {
             $pdo = getPDO();
-            $conditions = [];
-            $bindings = [];
             
-            $stopWords = ["ابحث", "عن", "بدي", "معلومات", "المواطن", "مواطن", "سجل", "الاسم", "حساب", "رقم", "اسم"];
-            $words = explode(' ', $queryText);
-            $filteredWords = [];
-            foreach ($words as $w) {
-                $wClean = trim($w);
-                if (!empty($wClean) && !in_array($wClean, $stopWords)) {
-                    $filteredWords[] = $wClean;
+            // Ask Gemini to parse query
+            $aiResult = parseQueryWithGeminiWebhook($queryText);
+            if ($aiResult) {
+                $promptTokens += $aiResult['prompt_tokens'];
+                $completionTokens += $aiResult['completion_tokens'];
+            }
+            $aiData = $aiResult['data'] ?? null;
+            
+            $results = [];
+            
+            // Strategy A: Structured Search if AI extracted specific name/father/family fields
+            if ($aiData && (!empty($aiData['first_name']) || !empty($aiData['father_name']) || !empty($aiData['family_name']))) {
+                $conds = [];
+                $binds = [];
+                
+                if (!empty($aiData['first_name'])) {
+                    $variants = ArabicNormalizer::extractCompoundVariants($aiData['first_name']);
+                    $sub = [];
+                    foreach ($variants as $vi => $v) {
+                        $p = "fn_" . $vi;
+                        $sub[] = "normalized_name LIKE :$p";
+                        $binds[$p] = '%' . $v . '%';
+                    }
+                    if (!empty($sub)) $conds[] = "(" . implode(" OR ", $sub) . ")";
+                }
+                
+                if (!empty($aiData['father_name'])) {
+                    $variants = ArabicNormalizer::extractCompoundVariants($aiData['father_name']);
+                    $sub = [];
+                    foreach ($variants as $vi => $v) {
+                        $p = "fat_" . $vi;
+                        $sub[] = "(normalized_father_name LIKE :$p OR normalized_name LIKE :$p)";
+                        $binds[$p] = '%' . $v . '%';
+                    }
+                    if (!empty($sub)) $conds[] = "(" . implode(" OR ", $sub) . ")";
+                }
+                
+                if (!empty($aiData['family_name'])) {
+                    $variants = ArabicNormalizer::extractCompoundVariants($aiData['family_name']);
+                    $sub = [];
+                    foreach ($variants as $vi => $v) {
+                        $p = "fam_" . $vi;
+                        $sub[] = "(normalized_name LIKE :$p OR normalized_mother_name LIKE :$p)";
+                        $binds[$p] = '%' . $v . '%';
+                    }
+                    if (!empty($sub)) $conds[] = "(" . implode(" OR ", $sub) . ")";
+                }
+                
+                if (!empty($aiData['registry_no'])) {
+                    $conds[] = "registry_no LIKE :reg_no";
+                    $binds['reg_no'] = '%' . trim($aiData['registry_no']) . '%';
+                }
+                
+                if (!empty($aiData['village'])) {
+                    $conds[] = "village LIKE :vil";
+                    $binds['vil'] = '%' . ArabicNormalizer::normalize($aiData['village']) . '%';
+                }
+                
+                if (!empty($conds)) {
+                    $sql = "SELECT name, father_name, mother_name, registry_no, sect, birth_date, birth_date_raw, gender, village, page_number, row_index 
+                            FROM voters WHERE " . implode(" AND ", $conds) . " ORDER BY village ASC, registry_no ASC LIMIT 15";
+                    $stmt = $pdo->prepare($sql);
+                    $stmt->execute($binds);
+                    $results = $stmt->fetchAll();
                 }
             }
             
-            if (count($filteredWords) > 0) {
-                foreach ($filteredWords as $idx => $word) {
-                    $wordNorm = ArabicNormalizer::normalize($word);
-                    if (!empty($wordNorm)) {
-                        $paramName = "q_word_" . $idx;
-                        $conditions[] = "(normalized_name LIKE :$paramName OR normalized_father_name LIKE :$paramName OR normalized_mother_name LIKE :$paramName OR registry_no LIKE :$paramName OR village LIKE :$paramName)";
-                        $bindings[$paramName] = '%' . $wordNorm . '%';
+            // Strategy B: Token-based Search with compound expansion
+            if (empty($results)) {
+                $searchTokens = [];
+                if ($aiData && !empty($aiData['search_tokens']) && is_array($aiData['search_tokens'])) {
+                    foreach ($aiData['search_tokens'] as $tok) {
+                        $normTok = ArabicNormalizer::normalize($tok);
+                        if (!empty($normTok) && mb_strlen($normTok) > 1 && !in_array($normTok, ['او', 'أو', 'في', 'من', 'عن', 'بدي', 'ابحث'])) {
+                            $searchTokens[] = $normTok;
+                        }
                     }
                 }
                 
-                if (count($conditions) > 0) {
+                if (empty($searchTokens)) {
+                    $stopWords = ["ابحث", "عن", "بدي", "معلومات", "المواطن", "مواطن", "سجل", "الاسم", "حساب", "رقم", "اسم", "او", "أو", "في", "من"];
+                    $rawWords = preg_split('/\s+/u', trim($queryText));
+                    $c = count($rawWords);
+                    for ($i = 0; $i < $c; $i++) {
+                        $w = ArabicNormalizer::normalize($rawWords[$i]);
+                        if (empty($w) || in_array($w, $stopWords)) continue;
+                        if ($w === 'عبد' && $i + 1 < $c) {
+                            $nextW = ArabicNormalizer::normalize($rawWords[$i+1]);
+                            $searchTokens[] = "عبد " . $nextW;
+                            $i++;
+                            continue;
+                        }
+                        $searchTokens[] = $w;
+                    }
+                }
+                
+                $conditions = [];
+                $bindings = [];
+                foreach ($searchTokens as $idx => $token) {
+                    $variants = ArabicNormalizer::extractCompoundVariants($token);
+                    $subConditions = [];
+                    foreach ($variants as $vIdx => $v) {
+                        $paramName = "tok_{$idx}_{$vIdx}";
+                        $subConditions[] = "(normalized_name LIKE :$paramName OR normalized_father_name LIKE :$paramName OR normalized_mother_name LIKE :$paramName OR registry_no LIKE :$paramName OR village LIKE :$paramName)";
+                        $bindings[$paramName] = '%' . $v . '%';
+                    }
+                    if (!empty($subConditions)) {
+                        $conditions[] = "(" . implode(" OR ", $subConditions) . ")";
+                    }
+                }
+                
+                if (!empty($conditions)) {
                     $where = "WHERE " . implode(" AND ", $conditions);
                     $sql = "SELECT name, father_name, mother_name, registry_no, sect, birth_date, birth_date_raw, gender, village, page_number, row_index 
                             FROM voters $where ORDER BY village ASC, registry_no ASC LIMIT 15";
                     $stmt = $pdo->prepare($sql);
                     $stmt->execute($bindings);
                     $results = $stmt->fetchAll();
-                    
-                    if (count($results) > 0) {
-                        $reply = "🔍 <b>نتائج البحث المكتشفة:</b>\n\n";
-                        foreach ($results as $v) {
-                            $reply .= "👤 <b>" . htmlspecialchars($v['name']) . "</b>\n";
-                            $reply .= "▪️ <b>اسم الأب:</b> " . htmlspecialchars($v['father_name']) . "\n";
-                            $reply .= "▪️ <b>اسم الأم:</b> " . htmlspecialchars($v['mother_name']) . "\n";
-                            $reply .= "▪️ <b>رقم القيد / البلدة:</b> " . htmlspecialchars($v['registry_no']) . " / " . htmlspecialchars($v['village']) . "\n";
-                            $reply .= "▪️ <b>المذهب / الولادة:</b> " . htmlspecialchars($v['sect']) . " / " . htmlspecialchars($v['birth_date'] ? $v['birth_date'] : $v['birth_date_raw']) . "\n";
-                            $reply .= "📌 ص <b>" . $v['page_number'] . "</b> / س <b>" . $v['row_index'] . "</b>\n";
-                            $reply .= "──────────────────\n";
-                        }
-                        sendTelegramMessageWebhook($chatId, $reply);
-                        logChatbotInteraction($chatId, $username, $msgType, $queryText, $reply, $promptTokens, $completionTokens);
-                    } else {
-                        $reply = "❌ لم يتم العثور على أي مواطن يطابق معايير البحث.";
-                        sendTelegramMessageWebhook($chatId, $reply);
-                        logChatbotInteraction($chatId, $username, $msgType, $queryText, $reply, $promptTokens, $completionTokens);
-                    }
-                } else {
-                    $reply = "❌ الرجاء كتابة معايير بحث واضحة.";
-                    sendTelegramMessageWebhook($chatId, $reply);
-                    logChatbotInteraction($chatId, $username, $msgType, $queryText, $reply, $promptTokens, $completionTokens);
                 }
+            }
+            
+            if (!empty($results)) {
+                $reply = "🔍 <b>تم العثور على (" . count($results) . ") نتيجة مطابقة:</b>\n\n";
+                foreach ($results as $v) {
+                    $bdate = $v['birth_date'] ? $v['birth_date'] : $v['birth_date_raw'];
+                    $reply .= "👤 <b>" . htmlspecialchars($v['name']) . "</b>\n";
+                    $reply .= "▪️ <b>اسم الأب:</b> " . htmlspecialchars($v['father_name']) . "\n";
+                    $reply .= "▪️ <b>اسم الأم:</b> " . htmlspecialchars($v['mother_name']) . "\n";
+                    $reply .= "▪️ <b>رقم القيد / البلدة:</b> " . htmlspecialchars($v['registry_no']) . " / " . htmlspecialchars($v['village']) . "\n";
+                    $reply .= "▪️ <b>المذهب / تاريخ الولادة:</b> " . htmlspecialchars($v['sect']) . " / " . htmlspecialchars($bdate) . "\n";
+                    $reply .= "📌 <b>السجل:</b> صفحة <b>" . $v['page_number'] . "</b> / سطر <b>" . $v['row_index'] . "</b>\n";
+                    $reply .= "──────────────────\n";
+                }
+                sendTelegramMessageWebhook($chatId, $reply);
+                logChatbotInteraction($chatId, $username, $msgType, $queryText, $reply, $promptTokens, $completionTokens);
             } else {
-                $reply = "❌ الرجاء كتابة معايير بحث واضحة.";
+                $reply = "❌ <b>لم يتم العثور على أي مواطن يطابق معايير البحث.</b>\n💡 <i>يرجى التأكد من كتابة الاسم بدقة أو البحث برقم السجل.</i>";
                 sendTelegramMessageWebhook($chatId, $reply);
                 logChatbotInteraction($chatId, $username, $msgType, $queryText, $reply, $promptTokens, $completionTokens);
             }
         } catch (\Exception $ex) {
-            sendTelegramMessageWebhook($chatId, "⚠️ حدث خطأ في قاعدة البيانات أثناء معالجة الطلب.");
+            sendTelegramMessageWebhook($chatId, "⚠️ حدث خطأ أثناء معالجة الطلب في قاعدة البيانات.");
         }
     }
     

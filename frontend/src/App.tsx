@@ -23,7 +23,12 @@ import {
   Plus,
   MessageSquare,
   Cpu,
-  Mic
+  Mic,
+  Zap,
+  Wrench,
+  CheckCircle2,
+  AlertTriangle,
+  RefreshCw
 } from 'lucide-react';
 
 interface Voter {
