@@ -1129,14 +1129,24 @@ $app->post('/api/telegram/settings', function (Request $request, Response $respo
     }
 });
 
-// Helper for Telegram Whitelist Checks
 function isTelegramWhitelisted($chatId, $username) {
     try {
         $pdo = getPDO();
-        $stmt = $pdo->prepare("SELECT 1 FROM telegram_whitelist WHERE identifier = :chat_id OR identifier = :username LIMIT 1");
+        $stmt = $pdo->prepare("
+            SELECT 1 FROM telegram_whitelist 
+            WHERE TRIM(identifier) = :chat_id 
+               OR TRIM(identifier) = :u_at 
+               OR TRIM(identifier) = :u_clean 
+               OR TRIM(LEADING '@' FROM TRIM(identifier)) = :u_clean 
+            LIMIT 1
+        ");
+        $uRaw = trim($username ?? '');
+        $uAt = $uRaw ? '@' . ltrim($uRaw, '@') : '___never___';
+        $uClean = $uRaw ? ltrim($uRaw, '@') : '___never___';
         $stmt->execute([
-            'chat_id' => strval($chatId),
-            'username' => $username ? '@' . ltrim($username, '@') : '___never___'
+            'chat_id' => trim(strval($chatId)),
+            'u_at' => $uAt,
+            'u_clean' => $uClean
         ]);
         return (bool)$stmt->fetch();
     } catch (\Exception $e) {

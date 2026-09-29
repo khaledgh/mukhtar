@@ -15,22 +15,30 @@ if sys.stdout.encoding != 'utf-8':
     except Exception:
         pass
 
-# Load env variables from backend .env or current directory
+# Load env variables with priority to backend/.env
 env = {}
-env_files = [".env", os.path.join(os.path.dirname(__file__), ".env")]
-for env_file in env_files:
-    if os.path.exists(env_file):
+script_dir = os.path.dirname(os.path.abspath(__file__))
+env_candidates = [
+    os.path.join(script_dir, ".env"),
+    os.path.join(script_dir, "..", ".env"),
+    os.path.join(os.getcwd(), ".env")
+]
+
+for env_path in env_candidates:
+    if os.path.isfile(env_path):
         try:
-            with open(env_file, "r", encoding="utf-8") as f:
+            with open(env_path, "r", encoding="utf-8") as f:
                 for line in f:
                     line_s = line.strip()
                     if line_s and not line_s.startswith('#'):
                         parts = line_s.split('=', 1)
                         if len(parts) == 2:
-                            env[parts[0].strip()] = parts[1].strip().strip('"\'')
-            break
+                            k = parts[0].strip()
+                            v = parts[1].strip().strip('"\'')
+                            if k not in env:
+                                env[k] = v
         except Exception as e:
-            print(f"Error loading {env_file}: {e}")
+            print(f"Error loading {env_path}: {e}")
 
 BOT_TOKEN = env.get("TELEGRAM_BOT_TOKEN")
 GEMINI_KEY = env.get("GEMINI_API_KEY")
@@ -40,28 +48,88 @@ if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
     sys.exit(1)
 
 def get_db_conn():
-    return mysql.connector.connect(
-        host=env.get("DB_HOST", "127.0.0.1"),
-        port=int(env.get("DB_PORT", 3306)),
-        user=env.get("DB_USER", "root"),
-        password=env.get("DB_PASS", ""),
-        database=env.get("DB_NAME", "electoral_db"),
-        charset="utf8mb4"
-    )
+    host = env.get("DB_HOST", "127.0.0.1")
+    port = int(env.get("DB_PORT", 3306))
+    user = env.get("DB_USER", "root")
+    password = env.get("DB_PASS", "")
+    database = env.get("DB_NAME", "electoral_db")
+    
+    # 1. Primary connection attempt
+    try:
+        return mysql.connector.connect(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=database,
+            charset="utf8mb4",
+            connection_timeout=8
+        )
+    except Exception as primary_err:
+        # 2. If localhost or 127.0.0.1, try alternative local options (sockets for aaPanel/Linux)
+        if host in ["127.0.0.1", "localhost"]:
+            alt_host = "localhost" if host == "127.0.0.1" else "127.0.0.1"
+            try:
+                return mysql.connector.connect(
+                    host=alt_host,
+                    port=port,
+                    user=user,
+                    password=password,
+                    database=database,
+                    charset="utf8mb4",
+                    connection_timeout=5
+                )
+            except Exception:
+                pass
+            
+            # Common Linux/aaPanel socket locations
+            for sock in ["/tmp/mysql.sock", "/var/run/mysqld/mysqld.sock", "/var/lib/mysql/mysql.sock"]:
+                if os.path.exists(sock):
+                    try:
+                        return mysql.connector.connect(
+                            unix_socket=sock,
+                            user=user,
+                            password=password,
+                            database=database,
+                            charset="utf8mb4",
+                            connection_timeout=5
+                        )
+                    except Exception:
+                        pass
+        raise primary_err
 
 def is_whitelisted(chat_id, username):
+    """
+    Checks if chat_id or username is in telegram_whitelist.
+    Returns:
+      True  -> authorized
+      False -> unauthorized
+      None  -> database connection or query error
+    """
     try:
         conn = get_db_conn()
         cursor = conn.cursor()
-        query = "SELECT 1 FROM telegram_whitelist WHERE identifier = %s OR identifier = %s LIMIT 1"
-        cursor.execute(query, (str(chat_id), f"@{username}" if username else "___never___"))
+        query = """
+            SELECT 1 FROM telegram_whitelist 
+            WHERE TRIM(identifier) = %s 
+               OR TRIM(identifier) = %s 
+               OR TRIM(identifier) = %s 
+               OR TRIM(LEADING '@' FROM TRIM(identifier)) = %s
+            LIMIT 1
+        """
+        c_id = str(chat_id).strip()
+        u_raw = (username or "").strip()
+        u_at = f"@{u_raw.lstrip('@')}" if u_raw else "___never___"
+        u_clean = u_raw.lstrip('@') if u_raw else "___never___"
+        
+        cursor.execute(query, (c_id, u_at, u_clean, u_clean))
         res = cursor.fetchone()
         cursor.close()
         conn.close()
         return bool(res)
     except Exception as e:
-        print(f"Whitelist DB error: {e}")
-        return False
+        print(f"[DB ERROR] Whitelist DB check failed: {e}")
+        return None
 
 def normalize_arabic_search(text):
     if not text:
@@ -404,7 +472,18 @@ def main():
                     first_name = message.get("from", {}).get("first_name", "مستخدم")
                     
                     # Whitelist Check
-                    if not is_whitelisted(chat_id, username):
+                    auth_status = is_whitelisted(chat_id, username)
+                    if auth_status is None:
+                        # Database connection or internal query failure
+                        err_msg = (
+                            "⚠️ <b>تنبيه: تعذر الاتصال بقاعدة بيانات الخادم!</b>\n\n"
+                            "فشل البوت في الوصول إلى قاعدة البيانات للتحقق من الصلاحيات.\n"
+                            "💡 <b>للمسؤول:</b> يرجى التأكد من تشغيل خادم MySQL وتطابق بيانات الربط (DB_HOST, DB_USER, DB_PASS, DB_NAME) في <code>backend/.env</code>."
+                        )
+                        send_message(chat_id, err_msg)
+                        continue
+                    elif not auth_status:
+                        # Truly unauthorized
                         msg = f"⚠️ <b>عذراً يا {html.escape(first_name)}، هذا الحساب غير مصرح له بالدخول.</b>\n\n"
                         msg += f"يرجى تزويد المسؤول بمعرفك الخاص بالوصول لتفعيله:\n"
                         msg += f"<code>{chat_id}</code>"

@@ -61,13 +61,35 @@ else
     apt-get install -y python3-pip python3-mysql.connector || pip3 install --break-system-packages mysql-connector-python
 fi
 
-# 4. Add Watchdog to Crontab (Runs every 1 minute automatically)
-echo "[2/4] Setting up Cron Watchdog (keeps bot alive 24/7)..."
+# 4. Check Database Connection from Python
+echo "[2/4] Verifying MySQL Database Connection from Python..."
+"$PYTHON_BIN" -c "
+import sys, os
+sys.path.insert(0, '$PROJECT_DIR')
+sys.path.insert(0, '$PROJECT_DIR/backend')
+try:
+    import telegram_bot
+    conn = telegram_bot.get_db_conn()
+    cur = conn.cursor()
+    cur.execute('SELECT COUNT(*) FROM telegram_whitelist')
+    cnt = cur.fetchone()[0]
+    print(f'  -> [SUCCESS] Connected to database! Found {cnt} whitelisted entries.')
+    cur.close()
+    conn.close()
+except Exception as e:
+    print(f'  -> [WARNING] Database connection failed: {e}')
+    print('     Please verify DB_HOST, DB_USER, DB_PASS, DB_NAME in backend/.env')
+"
+
+# 5. Add Watchdog to Crontab (Runs every 1 minute automatically)
+echo "[3/4] Setting up Cron Watchdog (keeps bot alive 24/7)..."
 CRON_JOB="* * * * * bash \"$PROJECT_DIR/keep_alive_bot.sh\" >/dev/null 2>&1"
 (crontab -l 2>/dev/null | grep -F -v "keep_alive_bot.sh" ; echo "$CRON_JOB") | crontab -
 
-# 5. Trigger keep_alive_bot.sh to launch the bot immediately
-echo "[3/4] Launching Telegram Bot..."
+# 6. Stop existing bot process if any, and trigger keep_alive_bot.sh
+echo "[4/4] Restarting Telegram Bot with new updates..."
+pkill -f "$PROJECT_DIR/backend/telegram_bot.py" 2>/dev/null || true
+sleep 1
 bash "$PROJECT_DIR/keep_alive_bot.sh"
 
 sleep 2
