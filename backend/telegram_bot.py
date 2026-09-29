@@ -375,121 +375,129 @@ def main():
     print("Listening for incoming Telegram queries (Text & Voice)...")
     offset = 0
     while True:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}&timeout=25"
         try:
-            res = requests.get(url, timeout=35)
-            if res.status_code != 200:
-                print(f"Polling HTTP {res.status_code}: {res.text}")
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}&timeout=25"
+            try:
+                res = requests.get(url, timeout=35)
+                if res.status_code != 200:
+                    print(f"Polling HTTP {res.status_code}: {res.text}")
+                    time.sleep(3)
+                    continue
+                data = res.json()
+            except Exception as e:
+                print(f"Polling network exception: {e}")
                 time.sleep(3)
                 continue
-            data = res.json()
-        except Exception as e:
-            print(f"Polling network exception: {e}")
-            time.sleep(3)
-            continue
-            
-        if not data.get("result"):
-            continue
-            
-        for update in data["result"]:
-            offset = update["update_id"] + 1
-            message = update.get("message")
-            if not message:
+                
+            if not data.get("result"):
                 continue
                 
-            chat_id = message["chat"]["id"]
-            username = message.get("from", {}).get("username")
-            first_name = message.get("from", {}).get("first_name", "مستخدم")
-            
-            # Whitelist Check
-            if not is_whitelisted(chat_id, username):
-                msg = f"⚠️ <b>عذراً يا {html.escape(first_name)}، هذا الحساب غير مصرح له بالدخول.</b>\n\n"
-                msg += f"يرجى تزويد المسؤول بمعرفك الخاص بالوصول لتفعيله:\n"
-                msg += f"<code>{chat_id}</code>"
-                if username:
-                    msg += f" أو <code>@{html.escape(username)}</code>"
-                send_message(chat_id, msg)
-                continue
-                
-            query_text = None
-            is_voice = False
-            prompt_tokens = 0
-            completion_tokens = 0
-            
-            # Voice Message
-            if message.get("voice"):
-                is_voice = True
-                file_id = message["voice"]["file_id"]
-                send_message(chat_id, "🎙️ <i>جاري الاستماع للمقطع الصوتي وتحليله بالذكاء الاصطناعي...</i>")
+            for update in data["result"]:
                 try:
-                    file_info = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}", timeout=10).json()
-                    file_path = file_info["result"]["file_path"]
-                    audio_res = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}", timeout=20)
-                    audio_b64 = base64.encodebytes(audio_res.content).decode("utf-8")
+                    offset = update["update_id"] + 1
+                    message = update.get("message")
+                    if not message:
+                        continue
+                        
+                    chat_id = message["chat"]["id"]
+                    username = message.get("from", {}).get("username")
+                    first_name = message.get("from", {}).get("first_name", "مستخدم")
                     
-                    gemini_res = transcribe_audio_gemini(audio_b64)
-                    if gemini_res and gemini_res.get("text"):
-                        query_text = gemini_res["text"]
-                        prompt_tokens = gemini_res.get("prompt_tokens", 0)
-                        completion_tokens = gemini_res.get("completion_tokens", 0)
-                        send_message(chat_id, f"📝 <b>النص المستخرج من الصوت:</b>\n<i>\"{html.escape(query_text)}\"</i>")
-                    else:
-                        reply = "⚠️ تعذر استخراج النص من التسجيل الصوتي بدقة. يرجى إعادة المحاولة أو إرسال الاسم نصياً."
-                        send_message(chat_id, reply)
-                        log_chatbot_interaction(chat_id, username, 'voice', '[Voice Note (failed)]', reply, 0, 0)
-                except Exception as ex:
-                    print(f"Voice download error: {ex}")
-                    reply = "⚠️ حدث خطأ أثناء تحميل الملف الصوتي."
-                    send_message(chat_id, reply)
-                    log_chatbot_interaction(chat_id, username, 'voice', '[Voice Note (download error)]', reply, 0, 0)
-            
-            # Text Message
-            elif message.get("text"):
-                text = message["text"].strip()
-                if text in ["/start", "/help"]:
-                    reply = (
-                        "👋 أهلاً بك في <b>نظام استعلام سجلات الناخبين الذكي</b>.\n\n"
-                        "✨ <b>كيفية الاستخدام:</b>\n"
-                        "• أرسل اسم المواطن كاملاً (مثل: <code>حليمة عبدالقادر حمزة</code>)\n"
-                        "• يدعم النظام الأسماء المركبة بمسافات أو بدون (مثل: <code>عبد الله</code> أو <code>عبدالله</code>)\n"
-                        "• يمكنك البحث برقم السجل أو اسم البلدة\n"
-                        "• يمكنك أيضاً إرسال <b>تسجيل صوتي 🎙️</b> بالاسم مباشرةً."
-                    )
-                    send_message(chat_id, reply)
-                    log_chatbot_interaction(chat_id, username, 'text', text, reply, 0, 0)
-                    continue
-                query_text = text
-                
-            # Process query with AI and database
-            if query_text:
-                msg_type = 'voice' if is_voice else 'text'
-                if not is_voice:
-                    send_message(chat_id, "🔄 <i>جاري البحث في السجلات وتحليل الاسم بالذكاء الاصطناعي...</i>")
-                
-                results, p_tok, c_tok = query_citizens_smart(query_text)
-                prompt_tokens += p_tok
-                completion_tokens += c_tok
-                
-                if results:
-                    reply = f"🔍 <b>تم العثور على ({len(results)}) نتيجة مطابقة:</b>\n\n"
-                    for v in results:
-                        bdate = v['birth_date'] if v['birth_date'] else v['birth_date_raw']
-                        reply += f"👤 <b>{html.escape(v['name'])}</b>\n"
-                        reply += f"▪️ <b>اسم الأب:</b> {html.escape(v['father_name'])}\n"
-                        reply += f"▪️ <b>اسم الأم:</b> {html.escape(v['mother_name'])}\n"
-                        reply += f"▪️ <b>رقم القيد / البلدة:</b> {html.escape(str(v['registry_no']))} / {html.escape(v['village'])}\n"
-                        reply += f"▪️ <b>المذهب / تاريخ الولادة:</b> {html.escape(v['sect'])} / {html.escape(str(bdate))}\n"
-                        reply += f"📌 <b>السجل:</b> صفحة <b>{v['page_number']}</b> / سطر <b>{v['row_index']}</b>\n"
-                        reply += "──────────────────\n"
-                    send_message(chat_id, reply)
-                    log_chatbot_interaction(chat_id, username, msg_type, query_text, reply, prompt_tokens, completion_tokens)
-                else:
-                    reply = (
-                        "❌ <b>لم يتم العثور على أي مواطن يطابق معايير البحث.</b>\n"
-                        "💡 <i>نصيحة: تأكد من كتابة الاسم بدقة، أو جرب البحث بالاسم واسم الأب فقط أو رقم القيد.</i>"
-                    )
-                    send_message(chat_id, reply)
-                    log_chatbot_interaction(chat_id, username, msg_type, query_text, reply, prompt_tokens, completion_tokens)
+                    # Whitelist Check
+                    if not is_whitelisted(chat_id, username):
+                        msg = f"⚠️ <b>عذراً يا {html.escape(first_name)}، هذا الحساب غير مصرح له بالدخول.</b>\n\n"
+                        msg += f"يرجى تزويد المسؤول بمعرفك الخاص بالوصول لتفعيله:\n"
+                        msg += f"<code>{chat_id}</code>"
+                        if username:
+                            msg += f" أو <code>@{html.escape(username)}</code>"
+                        send_message(chat_id, msg)
+                        continue
+                        
+                    query_text = None
+                    is_voice = False
+                    prompt_tokens = 0
+                    completion_tokens = 0
+                    
+                    # Voice Message
+                    if message.get("voice"):
+                        is_voice = True
+                        file_id = message["voice"]["file_id"]
+                        send_message(chat_id, "🎙️ <i>جاري الاستماع للمقطع الصوتي وتحليله بالذكاء الاصطناعي...</i>")
+                        try:
+                            file_info = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}", timeout=10).json()
+                            file_path = file_info["result"]["file_path"]
+                            audio_res = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}", timeout=20)
+                            audio_b64 = base64.encodebytes(audio_res.content).decode("utf-8")
+                            
+                            gemini_res = transcribe_audio_gemini(audio_b64)
+                            if gemini_res and gemini_res.get("text"):
+                                query_text = gemini_res["text"]
+                                prompt_tokens = gemini_res.get("prompt_tokens", 0)
+                                completion_tokens = gemini_res.get("completion_tokens", 0)
+                                send_message(chat_id, f"📝 <b>النص المستخرج من الصوت:</b>\n<i>\"{html.escape(query_text)}\"</i>")
+                            else:
+                                reply = "⚠️ تعذر استخراج النص من التسجيل الصوتي بدقة. يرجى إعادة المحاولة أو إرسال الاسم نصياً."
+                                send_message(chat_id, reply)
+                                log_chatbot_interaction(chat_id, username, 'voice', '[Voice Note (failed)]', reply, 0, 0)
+                        except Exception as ex:
+                            print(f"Voice download error: {ex}")
+                            reply = "⚠️ حدث خطأ أثناء تحميل الملف الصوتي."
+                            send_message(chat_id, reply)
+                            log_chatbot_interaction(chat_id, username, 'voice', '[Voice Note (download error)]', reply, 0, 0)
+                    
+                    # Text Message
+                    elif message.get("text"):
+                        text = message["text"].strip()
+                        if text in ["/start", "/help"]:
+                            reply = (
+                                "👋 أهلاً بك في <b>نظام استعلام سجلات الناخبين الذكي</b>.\n\n"
+                                "✨ <b>كيفية الاستخدام:</b>\n"
+                                "• أرسل اسم المواطن كاملاً (مثل: <code>حليمة عبدالقادر حمزة</code>)\n"
+                                "• يدعم النظام الأسماء المركبة بمسافات أو بدون (مثل: <code>عبد الله</code> أو <code>عبدالله</code>)\n"
+                                "• يمكنك البحث برقم السجل أو اسم البلدة\n"
+                                "• يمكنك أيضاً إرسال <b>تسجيل صوتي 🎙️</b> بالاسم مباشرةً."
+                            )
+                            send_message(chat_id, reply)
+                            log_chatbot_interaction(chat_id, username, 'text', text, reply, 0, 0)
+                            continue
+                        query_text = text
+                        
+                    # Process query with AI and database
+                    if query_text:
+                        msg_type = 'voice' if is_voice else 'text'
+                        if not is_voice:
+                            send_message(chat_id, "🔄 <i>جاري البحث في السجلات وتحليل الاسم بالذكاء الاصطناعي...</i>")
+                        
+                        results, p_tok, c_tok = query_citizens_smart(query_text)
+                        prompt_tokens += p_tok
+                        completion_tokens += c_tok
+                        
+                        if results:
+                            reply = f"🔍 <b>تم العثور على ({len(results)}) نتيجة مطابقة:</b>\n\n"
+                            for v in results:
+                                bdate = v['birth_date'] if v['birth_date'] else v['birth_date_raw']
+                                reply += f"👤 <b>{html.escape(v['name'])}</b>\n"
+                                reply += f"▪️ <b>اسم الأب:</b> {html.escape(v['father_name'])}\n"
+                                reply += f"▪️ <b>اسم الأم:</b> {html.escape(v['mother_name'])}\n"
+                                reply += f"▪️ <b>رقم القيد / البلدة:</b> {html.escape(str(v['registry_no']))} / {html.escape(v['village'])}\n"
+                                reply += f"▪️ <b>المذهب / تاريخ الولادة:</b> {html.escape(v['sect'])} / {html.escape(str(bdate))}\n"
+                                reply += f"📌 <b>السجل:</b> صفحة <b>{v['page_number']}</b> / سطر <b>{v['row_index']}</b>\n"
+                                reply += "──────────────────\n"
+                            send_message(chat_id, reply)
+                            log_chatbot_interaction(chat_id, username, msg_type, query_text, reply, prompt_tokens, completion_tokens)
+                        else:
+                            reply = (
+                                "❌ <b>لم يتم العثور على أي مواطن يطابق معايير البحث.</b>\n"
+                                "💡 <i>نصيحة: تأكد من كتابة الاسم بدقة، أو جرب البحث بالاسم واسم الأب فقط أو رقم القيد.</i>"
+                            )
+                            send_message(chat_id, reply)
+                            log_chatbot_interaction(chat_id, username, msg_type, query_text, reply, prompt_tokens, completion_tokens)
+                except Exception as update_err:
+                    print(f"Error processing update: {update_err}")
+                    time.sleep(1)
+        except Exception as loop_err:
+            print(f"Unexpected error in main polling loop: {loop_err}")
+            time.sleep(3)
 
 if __name__ == "__main__":
     main()
