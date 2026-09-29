@@ -1744,8 +1744,13 @@ export default function App() {
                           fontWeight: 700, 
                           color: telegramData.webhook?.url ? '#fbbf24' : '#60a5fa' 
                         }}>
-                          {telegramData.webhook?.url ? '⚠️ ويب هوك مسجل' : '✓ وضع البولينغ جاهز'}
+                          {telegramData.webhook?.url ? '⚠️ ويب هوك مسجل' : '✓ وضع البولينغ (Polling)'}
                         </span>
+                        {!telegramData.webhook?.url && (
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.35rem' }}>
+                            💡 يتطلب تشغيل <code style={{ color: '#60a5fa', background: 'rgba(0,0,0,0.3)', padding: '0.1rem 0.3rem', borderRadius: '4px' }}>run_telegram_bot.bat</code> للاستقبال
+                          </div>
+                        )}
                       </div>
                       <div className="stat-icon" style={{ background: 'linear-gradient(135deg, #a855f7 0%, #7e22ce 100%)' }}>
                         <Radio size={24} />
