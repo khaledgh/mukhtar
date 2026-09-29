@@ -23,7 +23,21 @@ import {
   Plus,
   MessageSquare,
   Cpu,
-  Mic
+  Mic,
+  Bot,
+  Radio,
+  Activity,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
+  Send,
+  RefreshCw,
+  Key,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  Wrench,
+  Check
 } from 'lucide-react';
 
 interface Voter {
@@ -106,7 +120,27 @@ export default function App() {
   const [newDesc, setNewDesc] = useState('');
 
   // Admin Sub Tabs
-  const [adminSubTab, setAdminSubTab] = useState<'users' | 'whitelist' | 'chatbot'>('users');
+  const [adminSubTab, setAdminSubTab] = useState<'users' | 'whitelist' | 'chatbot' | 'telegram'>('users');
+
+  // Telegram Diagnostics & Settings State
+  const [telegramData, setTelegramData] = useState<any>(null);
+  const [telegramLoading, setTelegramLoading] = useState(false);
+  const [telegramFixing, setTelegramFixing] = useState(false);
+  const [telegramFixReport, setTelegramFixReport] = useState<{ success: boolean; message: string; actions?: string[] } | null>(null);
+
+  // Test Telegram Message
+  const [testChatId, setTestChatId] = useState('');
+  const [testCustomText, setTestCustomText] = useState('');
+  const [testSending, setTestSending] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string; hint?: string } | null>(null);
+
+  // Bot Token / Gemini Settings
+  const [tokenInput, setTokenInput] = useState('');
+  const [geminiKeyInput, setGeminiKeyInput] = useState('');
+  const [showTokenInput, setShowTokenInput] = useState(false);
+  const [showGeminiInput, setShowGeminiInput] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsMsg, setSettingsMsg] = useState<{ success: boolean; text: string } | null>(null);
 
   // Chatbot Logs State
   const [chatbotLogs, setChatbotLogs] = useState<any[]>([]);
@@ -203,6 +237,7 @@ export default function App() {
       setWhitelist(dataWhitelist);
       
       fetchChatbotLogs(1);
+      fetchTelegramDiagnostics();
     } catch (err) {
       console.error('Error fetching admin data:', err);
     }
@@ -323,6 +358,102 @@ export default function App() {
       }
     } catch (err) {
       console.error('Error deleting whitelist item:', err);
+    }
+  // Fetch Telegram Diagnostics
+  const fetchTelegramDiagnostics = async () => {
+    if (!token || userRole !== 'super_admin') return;
+    setTelegramLoading(true);
+    try {
+      const res = await authFetch(`${API_BASE_URL}/api/telegram/status`);
+      if (res.ok) {
+        const data = await res.json();
+        setTelegramData(data);
+      }
+    } catch (err) {
+      console.error('Error fetching telegram diagnostics:', err);
+    } finally {
+      setTelegramLoading(false);
+    }
+  };
+
+  // Reconnect and Fix Telegram
+  const handleTelegramReconnectAndFix = async () => {
+    if (!token || userRole !== 'super_admin') return;
+    setTelegramFixing(true);
+    setTelegramFixReport(null);
+    try {
+      const res = await authFetch(`${API_BASE_URL}/api/telegram/reconnect-fix`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setTelegramFixReport({ success: true, message: data.message, actions: data.actions });
+        if (data.diagnostics) {
+          setTelegramData(data.diagnostics);
+        }
+      } else {
+        setTelegramFixReport({ success: false, message: data.error || 'حدث خطأ أثناء محاولة الإصلاح' });
+      }
+    } catch (err: any) {
+      setTelegramFixReport({ success: false, message: err.message || 'خطأ في الاتصال بالخادم' });
+    } finally {
+      setTelegramFixing(false);
+    }
+  };
+
+  // Send Test Telegram Message
+  const handleSendTelegramTestMessage = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!testChatId) return;
+    setTestSending(true);
+    setTestResult(null);
+    try {
+      const res = await authFetch(`${API_BASE_URL}/api/telegram/test-message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: testChatId, text: testCustomText || undefined })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setTestResult({ success: true, message: data.message });
+      } else {
+        setTestResult({ success: false, message: data.error, hint: data.hint });
+      }
+    } catch (err: any) {
+      setTestResult({ success: false, message: err.message || 'تعذر الاتصال بالخادم' });
+    } finally {
+      setTestSending(false);
+    }
+  };
+
+  // Save Bot Token & Settings
+  const handleSaveTelegramSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSettingsSaving(true);
+    setSettingsMsg(null);
+    try {
+      const payload: any = {};
+      if (tokenInput.trim()) payload.bot_token = tokenInput.trim();
+      if (geminiKeyInput.trim()) payload.gemini_api_key = geminiKeyInput.trim();
+
+      const res = await authFetch(`${API_BASE_URL}/api/telegram/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSettingsMsg({ success: true, text: data.message });
+        if (data.diagnostics) setTelegramData(data.diagnostics);
+        setTokenInput('');
+        setGeminiKeyInput('');
+      } else {
+        setSettingsMsg({ success: false, text: data.error || 'تعذر حفظ الإعدادات' });
+      }
+    } catch (err: any) {
+      setSettingsMsg({ success: false, text: err.message || 'خطأ في الاتصال بالخادم' });
+    } finally {
+      setSettingsSaving(false);
     }
   };
 
@@ -985,6 +1116,16 @@ export default function App() {
               <MessageSquare size={18} />
               سجل المحادثات وتكلفة الذكاء الاصطناعي
             </button>
+            <button 
+              className={`btn ${adminSubTab === 'telegram' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => {
+                setAdminSubTab('telegram');
+                fetchTelegramDiagnostics();
+              }}
+            >
+              <Bot size={18} />
+              فحص وتشخيص بوت تليغرام والإصلاح
+            </button>
           </div>
 
           {/* User Management Sub-Tab */}
@@ -1369,6 +1510,544 @@ export default function App() {
                   )}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Telegram Diagnostics & Repair Sub-Tab */}
+          {adminSubTab === 'telegram' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+              
+              {/* Header Actions Bar */}
+              <div className="glass-card" style={{ padding: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+                <div>
+                  <h2 style={{ fontSize: '1.35rem', fontWeight: 800, display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.25rem' }}>
+                    <Bot size={24} color="var(--accent-color)" />
+                    مركز فحص وتشخيص بوت تليغرام والإصلاح الفوري
+                  </h2>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                    فحص مباشر لصحة الاتصال بسيرفرات Telegram، تشخيص الأعطال وتعارضات الويب هوك، وإصلاحها بضغطة زر واحدة.
+                  </p>
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button 
+                    onClick={fetchTelegramDiagnostics}
+                    disabled={telegramLoading}
+                    className="btn btn-secondary"
+                    style={{ padding: '0.65rem 1.25rem' }}
+                    title="إعادة فحص الاتصال الآن"
+                  >
+                    <RefreshCw size={18} className={telegramLoading ? 'animate-spin' : ''} style={{ animation: telegramLoading ? 'spin 1s linear infinite' : 'none' }} />
+                    {telegramLoading ? 'جاري الفحص...' : 'تحديث الفحص'}
+                  </button>
+
+                  <button 
+                    onClick={handleTelegramReconnectAndFix}
+                    disabled={telegramFixing}
+                    className="btn btn-primary"
+                    style={{ 
+                      padding: '0.65rem 1.4rem', 
+                      background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', 
+                      boxShadow: '0 0 15px rgba(16, 185, 129, 0.4)',
+                      fontWeight: 700 
+                    }}
+                  >
+                    <Wrench size={18} style={{ animation: telegramFixing ? 'spin 1s linear infinite' : 'none' }} />
+                    {telegramFixing ? 'جاري الإصلاح وإعادة الاتصال...' : 'إعادة الاتصال والإصلاح التلقائي الآن'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Fix Report Banner (if fix executed) */}
+              {telegramFixReport && (
+                <div className="glass-card" style={{ 
+                  padding: '1.5rem', 
+                  border: telegramFixReport.success ? '1px solid #10b981' : '1px solid #ef4444',
+                  background: telegramFixReport.success ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 800, fontSize: '1.1rem', color: telegramFixReport.success ? '#34d399' : '#f87171' }}>
+                      {telegramFixReport.success ? <CheckCircle2 size={22} /> : <AlertTriangle size={22} />}
+                      {telegramFixReport.message}
+                    </div>
+                    <button 
+                      onClick={() => setTelegramFixReport(null)}
+                      className="btn btn-secondary" 
+                      style={{ padding: '0.2rem 0.5rem', fontSize: '0.8rem' }}
+                    >
+                      إغلاق
+                    </button>
+                  </div>
+                  {telegramFixReport.actions && telegramFixReport.actions.length > 0 && (
+                    <div style={{ marginTop: '0.75rem', paddingRight: '1rem', borderRight: '2px solid rgba(255,255,255,0.1)' }}>
+                      {telegramFixReport.actions.map((action, idx) => (
+                        <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: '0.35rem 0', fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                          <Check size={16} color="#34d399" />
+                          <span>{action}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Loading State */}
+              {telegramLoading && !telegramData ? (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '4rem' }}>
+                  <div style={{ 
+                    border: '4px solid rgba(255,255,255,0.1)', 
+                    borderTop: '4px solid var(--accent-color)', 
+                    borderRadius: '50%', 
+                    width: '45px', 
+                    height: '45px', 
+                    animation: 'spin 1s linear infinite' 
+                  }} />
+                </div>
+              ) : telegramData && (
+                <>
+                  {/* Status Banner */}
+                  <div className="glass-card" style={{ padding: '1.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
+                      <div style={{ 
+                        width: '56px', 
+                        height: '56px', 
+                        borderRadius: '16px', 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'center',
+                        background: telegramData.status === 'healthy' 
+                          ? 'linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(5, 150, 105, 0.4) 100%)' 
+                          : telegramData.status === 'warning'
+                          ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.2) 0%, rgba(217, 119, 6, 0.4) 100%)'
+                          : 'linear-gradient(135deg, rgba(239, 68, 68, 0.2) 0%, rgba(185, 28, 28, 0.4) 100%)',
+                        border: telegramData.status === 'healthy' 
+                          ? '1px solid rgba(16, 185, 129, 0.4)' 
+                          : telegramData.status === 'warning'
+                          ? '1px solid rgba(245, 158, 11, 0.4)'
+                          : '1px solid rgba(239, 68, 68, 0.4)',
+                        boxShadow: telegramData.status === 'healthy' 
+                          ? '0 0 20px rgba(16, 185, 129, 0.3)' 
+                          : '0 0 20px rgba(239, 68, 68, 0.3)'
+                      }}>
+                        {telegramData.status === 'healthy' ? (
+                          <Activity size={28} color="#10b981" />
+                        ) : telegramData.status === 'warning' ? (
+                          <AlertTriangle size={28} color="#f59e0b" />
+                        ) : (
+                          <XCircle size={28} color="#ef4444" />
+                        )}
+                      </div>
+
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                          <span style={{ 
+                            padding: '0.3rem 0.8rem', 
+                            borderRadius: '30px', 
+                            fontSize: '0.85rem', 
+                            fontWeight: 800,
+                            background: telegramData.status === 'healthy' ? 'rgba(16, 185, 129, 0.15)' : telegramData.status === 'warning' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                            color: telegramData.status === 'healthy' ? '#34d399' : telegramData.status === 'warning' ? '#fbbf24' : '#f87171',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.4rem',
+                            border: `1px solid ${telegramData.status === 'healthy' ? 'rgba(16, 185, 129, 0.3)' : telegramData.status === 'warning' ? 'rgba(245, 158, 11, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
+                          }}>
+                            <span style={{ 
+                              width: '8px', 
+                              height: '8px', 
+                              borderRadius: '50%', 
+                              background: telegramData.status === 'healthy' ? '#10b981' : telegramData.status === 'warning' ? '#f59e0b' : '#ef4444',
+                              boxShadow: `0 0 8px ${telegramData.status === 'healthy' ? '#10b981' : '#ef4444'}`
+                            }} />
+                            {telegramData.status === 'healthy' ? 'متصل وجاهز للاستقبال والبحث' : telegramData.status === 'warning' ? 'متصل مع وجود تنبيهات' : 'غير متصل - يوجد خطأ في الاتصال'}
+                          </span>
+
+                          <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                            زمن الاستجابة: <strong style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-english)' }}>{telegramData.latency_ms} ms</strong>
+                          </span>
+                        </div>
+
+                        <div style={{ marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '1.2rem', fontWeight: 800 }}>
+                            {telegramData.bot?.first_name || 'البوت غير متصل'}
+                          </span>
+                          {telegramData.bot?.username && (
+                            <a 
+                              href={`https://t.me/${telegramData.bot.username}`} 
+                              target="_blank" 
+                              rel="noreferrer"
+                              style={{ 
+                                display: 'inline-flex', 
+                                alignItems: 'center', 
+                                gap: '0.3rem', 
+                                color: 'var(--accent-color)', 
+                                fontFamily: 'var(--font-english)', 
+                                fontWeight: 600,
+                                textDecoration: 'none'
+                              }}
+                            >
+                              @{telegramData.bot.username}
+                              <ExternalLink size={14} />
+                            </a>
+                          )}
+                          {telegramData.bot?.id && (
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-english)' }}>
+                              (ID: {telegramData.bot.id})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.25rem' }}>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>توقيت آخر فحص</span>
+                      <span style={{ fontFamily: 'var(--font-english)', fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                        {telegramData.checked_at}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* 4 Diagnostic Stat Cards */}
+                  <div className="grid-stats">
+                    {/* 1. Bot Token */}
+                    <div className="glass-card stat-card">
+                      <div className="stat-info">
+                        <h3>توكن البوت (Bot Token)</h3>
+                        <p style={{ fontFamily: 'var(--font-english)', fontSize: '1.2rem', marginTop: '0.25rem' }}>
+                          {telegramData.token_masked || 'غير محدد'}
+                        </p>
+                        <span style={{ 
+                          fontSize: '0.8rem', 
+                          fontWeight: 700, 
+                          color: telegramData.token_configured ? '#34d399' : '#f87171' 
+                        }}>
+                          {telegramData.token_configured ? '✓ التوكن مضبوط' : '✗ التوكن غير متوفر'}
+                        </span>
+                      </div>
+                      <div className="stat-icon" style={{ background: 'var(--accent-gradient)' }}>
+                        <Key size={24} />
+                      </div>
+                    </div>
+
+                    {/* 2. Webhook & Queue */}
+                    <div className="glass-card stat-card">
+                      <div className="stat-info">
+                        <h3>الويب هوك وقائمة الانتظار</h3>
+                        <p style={{ fontFamily: 'var(--font-english)', fontSize: '1.4rem' }}>
+                          {telegramData.webhook?.pending_update_count ?? 0}
+                          <span style={{ fontSize: '0.85rem', marginRight: '0.35rem', color: 'var(--text-secondary)' }}>معلق</span>
+                        </p>
+                        <span style={{ 
+                          fontSize: '0.8rem', 
+                          fontWeight: 700, 
+                          color: telegramData.webhook?.url ? '#fbbf24' : '#60a5fa' 
+                        }}>
+                          {telegramData.webhook?.url ? '⚠️ ويب هوك مسجل' : '✓ وضع البولينغ جاهز'}
+                        </span>
+                      </div>
+                      <div className="stat-icon" style={{ background: 'linear-gradient(135deg, #a855f7 0%, #7e22ce 100%)' }}>
+                        <Radio size={24} />
+                      </div>
+                    </div>
+
+                    {/* 3. Gemini AI */}
+                    <div className="glass-card stat-card">
+                      <div className="stat-info">
+                        <h3>محرك الذكاء الاصطناعي (Gemini)</h3>
+                        <p style={{ fontSize: '1rem', fontWeight: 700, marginTop: '0.25rem' }}>
+                          {telegramData.gemini?.connected ? 'جاهز ومتصل' : telegramData.gemini?.message || 'غير مفعل'}
+                        </p>
+                        <span style={{ 
+                          fontSize: '0.8rem', 
+                          fontWeight: 700, 
+                          color: telegramData.gemini?.connected ? '#34d399' : '#f87171' 
+                        }}>
+                          {telegramData.gemini?.connected ? `gemini-2.5-flash (${telegramData.gemini.latency_ms}ms)` : 'الصوت والتحليل معطل'}
+                        </span>
+                      </div>
+                      <div className="stat-icon" style={{ background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)' }}>
+                        <Cpu size={24} />
+                      </div>
+                    </div>
+
+                    {/* 4. Whitelist & Database */}
+                    <div className="glass-card stat-card">
+                      <div className="stat-info">
+                        <h3>المصرح لهم بالوصول (Whitelist)</h3>
+                        <p style={{ fontFamily: 'var(--font-english)', fontSize: '1.4rem' }}>
+                          {telegramData.whitelist_count}
+                          <span style={{ fontSize: '0.85rem', marginRight: '0.35rem', color: 'var(--text-secondary)' }}>مستخدم</span>
+                        </p>
+                        <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#34d399' }}>
+                          ✓ قاعدة البيانات متصلة
+                        </span>
+                      </div>
+                      <div className="stat-icon" style={{ background: 'var(--success-gradient)' }}>
+                        <Users size={24} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Issues & Root Cause Diagnostics Analyzer */}
+                  {telegramData.issues && telegramData.issues.length > 0 && (
+                    <div className="glass-card" style={{ padding: '1.75rem' }}>
+                      <h3 style={{ fontSize: '1.2rem', fontWeight: 800, marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#f87171' }}>
+                        <AlertTriangle size={22} color="#f87171" />
+                        تقرير كشف الأخطاء وأسبابها المقترحة (Root Causes & Solutions)
+                      </h3>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                        {telegramData.issues.map((issue: any, idx: number) => {
+                          const isErr = issue.type === 'error';
+                          const isWarn = issue.type === 'warning';
+                          const borderColor = isErr ? '#ef4444' : isWarn ? '#f59e0b' : '#3b82f6';
+                          const bgColor = isErr ? 'rgba(239, 68, 68, 0.08)' : isWarn ? 'rgba(245, 158, 11, 0.08)' : 'rgba(59, 130, 246, 0.08)';
+
+                          return (
+                            <div key={idx} style={{ 
+                              padding: '1.25rem', 
+                              borderRadius: '12px', 
+                              border: `1px solid ${borderColor}`, 
+                              background: bgColor,
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '0.5rem'
+                            }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                  <span style={{ 
+                                    padding: '0.2rem 0.5rem', 
+                                    borderRadius: '4px', 
+                                    fontSize: '0.75rem', 
+                                    fontWeight: 800, 
+                                    fontFamily: 'var(--font-english)',
+                                    background: isErr ? 'rgba(239, 68, 68, 0.25)' : isWarn ? 'rgba(245, 158, 11, 0.25)' : 'rgba(59, 130, 246, 0.25)',
+                                    color: isErr ? '#f87171' : isWarn ? '#fbbf24' : '#60a5fa'
+                                  }}>
+                                    {issue.code}
+                                  </span>
+                                  <strong style={{ fontSize: '1rem', color: 'var(--text-primary)' }}>{issue.title}</strong>
+                                </div>
+
+                                {(issue.code === 'WEBHOOK_ACTIVE' || issue.code === 'HIGH_PENDING_UPDATES') && (
+                                  <button 
+                                    onClick={handleTelegramReconnectAndFix}
+                                    disabled={telegramFixing}
+                                    className="btn btn-primary"
+                                    style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
+                                  >
+                                    إصلاح المشكلة الآن
+                                  </button>
+                                )}
+                              </div>
+
+                              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: '1.6' }}>
+                                {issue.message}
+                              </p>
+
+                              <div style={{ 
+                                background: 'rgba(0, 0, 0, 0.25)', 
+                                padding: '0.75rem 1rem', 
+                                borderRadius: '8px', 
+                                fontSize: '0.85rem', 
+                                color: 'var(--text-primary)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.5rem'
+                              }}>
+                                <span>💡 <strong>الحل المباشر:</strong> {issue.recommendation}</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Two Interactive Tools Columns */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))', gap: '1.5rem' }}>
+                    
+                    {/* Tool 1: Send Test Ping Message */}
+                    <div className="glass-card" style={{ padding: '2rem' }}>
+                      <h3 style={{ fontSize: '1.2rem', fontWeight: 800, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <Send size={20} color="var(--accent-color)" />
+                        فحص التوصيل المباشر (إرسال رسالة تجريبية)
+                      </h3>
+                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '1.25rem' }}>
+                        أرسل رسالة فحص فورية إلى أي حساب تليغرام للتأكد من قدرة الخادم على إيصال التنبيهات.
+                      </p>
+
+                      <form onSubmit={handleSendTelegramTestMessage} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                        <div className="input-group">
+                          <label>معرّف المحادثة (Telegram Chat ID)</label>
+                          <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            <input 
+                              type="text" 
+                              value={testChatId} 
+                              onChange={(e) => setTestChatId(e.target.value)} 
+                              placeholder="مثال: 263844931 أو 6538993902..."
+                              required
+                              style={{ flexGrow: 1 }}
+                            />
+                            {whitelist.length > 0 && (
+                              <select 
+                                onChange={(e) => {
+                                  if (e.target.value) setTestChatId(e.target.value);
+                                }}
+                                style={{ width: '130px', padding: '0.5rem' }}
+                                defaultValue=""
+                              >
+                                <option value="" disabled>اختر من القائمة...</option>
+                                {whitelist.map(w => (
+                                  <option key={w.id} value={w.identifier}>{w.description || w.identifier}</option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="input-group">
+                          <label>نص الرسالة المخصص (اختياري)</label>
+                          <input 
+                            type="text" 
+                            value={testCustomText} 
+                            onChange={(e) => setTestCustomText(e.target.value)} 
+                            placeholder="اترك فارغاً لإرسال رسالة الفحص الافتراضية المنسقة..."
+                          />
+                        </div>
+
+                        <button 
+                          type="submit" 
+                          disabled={testSending || !testChatId}
+                          className="btn btn-primary"
+                          style={{ marginTop: '0.5rem' }}
+                        >
+                          <Send size={18} />
+                          {testSending ? 'جاري إرسال الرسالة...' : 'إرسال رسالة الفحص الآن'}
+                        </button>
+                      </form>
+
+                      {/* Result Box */}
+                      {testResult && (
+                        <div style={{ 
+                          marginTop: '1rem', 
+                          padding: '1rem', 
+                          borderRadius: '8px', 
+                          border: testResult.success ? '1px solid #10b981' : '1px solid #ef4444',
+                          background: testResult.success ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700, color: testResult.success ? '#34d399' : '#f87171' }}>
+                            {testResult.success ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
+                            {testResult.message}
+                          </div>
+                          {testResult.hint && (
+                            <p style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                              💡 <strong>ملاحظة هامة:</strong> {testResult.hint}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Tool 2: Bot Token & Gemini Settings */}
+                    <div className="glass-card" style={{ padding: '2rem' }}>
+                      <h3 style={{ fontSize: '1.2rem', fontWeight: 800, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <Key size={20} color="var(--accent-color)" />
+                        إعداد وتحديث مفاتيح الربط والتوكن
+                      </h3>
+                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '1.25rem' }}>
+                        تحديث توكن البوت أو مفتاح Gemini AI مباشرة في ملف الإعدادات دون الحاجة للوصول للسيرفر.
+                      </p>
+
+                      <form onSubmit={handleSaveTelegramSettings} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                        <div className="input-group">
+                          <label>توكن تليغرام الجديد (TELEGRAM_BOT_TOKEN)</label>
+                          <div style={{ position: 'relative' }}>
+                            <input 
+                              type={showTokenInput ? 'text' : 'password'} 
+                              value={tokenInput} 
+                              onChange={(e) => setTokenInput(e.target.value)} 
+                              placeholder="أدخل التوكن الجديد الصادر من @BotFather..."
+                              style={{ width: '100%', paddingLeft: '2.5rem' }}
+                            />
+                            <button 
+                              type="button" 
+                              onClick={() => setShowTokenInput(!showTokenInput)}
+                              style={{ 
+                                position: 'absolute', 
+                                left: '10px', 
+                                top: '50%', 
+                                transform: 'translateY(-50%)', 
+                                background: 'transparent', 
+                                border: 'none', 
+                                color: 'var(--text-secondary)', 
+                                cursor: 'pointer' 
+                              }}
+                            >
+                              {showTokenInput ? <EyeOff size={16} /> : <Eye size={16} />}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="input-group">
+                          <label>مفتاح Google Gemini API الجديد</label>
+                          <div style={{ position: 'relative' }}>
+                            <input 
+                              type={showGeminiInput ? 'text' : 'password'} 
+                              value={geminiKeyInput} 
+                              onChange={(e) => setGeminiKeyInput(e.target.value)} 
+                              placeholder="أدخل مفتاح Gemini AI الجديد..."
+                              style={{ width: '100%', paddingLeft: '2.5rem' }}
+                            />
+                            <button 
+                              type="button" 
+                              onClick={() => setShowGeminiInput(!showGeminiInput)}
+                              style={{ 
+                                position: 'absolute', 
+                                left: '10px', 
+                                top: '50%', 
+                                transform: 'translateY(-50%)', 
+                                background: 'transparent', 
+                                border: 'none', 
+                                color: 'var(--text-secondary)', 
+                                cursor: 'pointer' 
+                              }}
+                            >
+                              {showGeminiInput ? <EyeOff size={16} /> : <Eye size={16} />}
+                            </button>
+                          </div>
+                        </div>
+
+                        <button 
+                          type="submit" 
+                          disabled={settingsSaving || (!tokenInput && !geminiKeyInput)}
+                          className="btn btn-secondary"
+                          style={{ marginTop: '0.5rem' }}
+                        >
+                          <Check size={18} />
+                          {settingsSaving ? 'جاري التحقق والحفظ...' : 'فحص وحفظ الإعدادات الجديدة'}
+                        </button>
+                      </form>
+
+                      {settingsMsg && (
+                        <div style={{ 
+                          marginTop: '1rem', 
+                          padding: '0.75rem 1rem', 
+                          borderRadius: '8px', 
+                          border: settingsMsg.success ? '1px solid #10b981' : '1px solid #ef4444',
+                          background: settingsMsg.success ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                          fontSize: '0.85rem',
+                          color: settingsMsg.success ? '#34d399' : '#f87171'
+                        }}>
+                          {settingsMsg.text}
+                        </div>
+                      )}
+                    </div>
+
+                  </div>
+                </>
+              )}
+
             </div>
           )}
 

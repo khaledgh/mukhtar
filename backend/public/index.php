@@ -721,6 +721,414 @@ $app->post('/api/system/fix', function (Request $request, Response $response) {
     }
 });
 
+// Helper for Telegram API calls with cURL
+function callTelegramApi($token, $method, $params = [], $httpMethod = 'GET') {
+    $url = "https://api.telegram.org/bot{$token}/{$method}";
+    $ch = curl_init();
+    if ($httpMethod === 'POST') {
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($params));
+    } else {
+        if (!empty($params)) {
+            $url .= '?' . http_build_query($params);
+        }
+        curl_setopt($ch, CURLOPT_URL, $url);
+    }
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    
+    $t0 = microtime(true);
+    $response = curl_exec($ch);
+    $latency = round((microtime(true) - $t0) * 1000);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+
+    $data = null;
+    if ($response) {
+        $data = json_decode($response, true);
+    }
+
+    return [
+        'http_code' => $httpCode,
+        'curl_error' => $curlError,
+        'latency_ms' => $latency,
+        'raw' => $response,
+        'data' => $data,
+        'ok' => !empty($data['ok'])
+    ];
+}
+
+// Helper: Comprehensive Telegram Diagnostics
+function getTelegramFullDiagnostics() {
+    $token = Config::get('TELEGRAM_BOT_TOKEN', '');
+    $geminiKey = Config::get('GEMINI_API_KEY', '');
+
+    $tokenConfigured = !empty($token) && $token !== 'YOUR_TELEGRAM_BOT_TOKEN_HERE';
+    $tokenMasked = '';
+    if ($tokenConfigured) {
+        $len = strlen($token);
+        $tokenMasked = $len > 14 ? substr($token, 0, 8) . '••••••••' . substr($token, -4) : '••••••••';
+    }
+
+    $issues = [];
+    $botInfo = null;
+    $webhookInfo = null;
+    $latencyMs = 0;
+    $isConnected = false;
+
+    if (!$tokenConfigured) {
+        $issues[] = [
+            'type' => 'error',
+            'code' => 'TOKEN_MISSING',
+            'title' => 'توكن البوت غير موجود أو غير مكتمل',
+            'message' => 'لم يتم إعداد TELEGRAM_BOT_TOKEN في ملف .env.',
+            'recommendation' => 'يرجى إدخال التوكن الخاص بالبوت الصادر من @BotFather في الإعدادات أدناه.'
+        ];
+    } else {
+        // 1. Check getMe
+        $meRes = callTelegramApi($token, 'getMe');
+        $latencyMs = $meRes['latency_ms'];
+
+        if ($meRes['ok']) {
+            $isConnected = true;
+            $botInfo = $meRes['data']['result'] ?? null;
+        } else {
+            $desc = $meRes['data']['description'] ?? $meRes['curl_error'] ?? 'تعذر الاتصال بسيرفرات تليغرام';
+            $code = $meRes['http_code'] ?: 'CONN_ERR';
+            
+            $explanation = 'حدث خطأ أثناء الاتصال مع سيرفرات Telegram.';
+            $recommendation = 'تحقق من صحة التوكن ومن اتصال السيرفر بالإنترنت.';
+            if ($code === 401) {
+                $explanation = 'التوكن غير صالح أو تم إلغاؤه وتغييره من BotFather.';
+                $recommendation = 'تأكد من نسخ التوكن الصحيح من @BotFather وتحديثه في الإعدادات أدناه.';
+            } elseif ($code === 404) {
+                $explanation = 'رابط الاستدعاء غير صالح أو التوكن يحتوي على مسافات/محارف غير مسموحة.';
+                $recommendation = 'أعد نسخ التوكن بدقة دون أي مسافات إضافية.';
+            } elseif (!empty($meRes['curl_error'])) {
+                $explanation = 'تعذر الوصول إلى خوادم تليغرام بسبب مشكلة شبكة أو جدار حماية: ' . $meRes['curl_error'];
+                $recommendation = 'تحقق من اتصال السيرفر بالإنترنت أو إعدادات البروكسي وجدار الحماية.';
+            }
+
+            $issues[] = [
+                'type' => 'error',
+                'code' => (string)$code,
+                'title' => "فشل اتصال تليغرام (كود {$code})",
+                'message' => $desc . " - " . $explanation,
+                'recommendation' => $recommendation
+            ];
+        }
+
+        // 2. Check getWebhookInfo
+        if ($isConnected) {
+            $whRes = callTelegramApi($token, 'getWebhookInfo');
+            if ($whRes['ok']) {
+                $webhookInfo = $whRes['data']['result'] ?? null;
+                $whUrl = $webhookInfo['url'] ?? '';
+                $pendingCount = $webhookInfo['pending_update_count'] ?? 0;
+                $lastErrorMsg = $webhookInfo['last_error_message'] ?? null;
+                $lastErrorDate = $webhookInfo['last_error_date'] ?? null;
+
+                if (!empty($whUrl)) {
+                    $issues[] = [
+                        'type' => 'warning',
+                        'code' => 'WEBHOOK_ACTIVE',
+                        'title' => 'الويب هوك (Webhook) مسجل حالياً',
+                        'message' => "البوت موجه إلى الرابط: {$whUrl}. إذا كنت تشغل سكربت telegram_bot.py المحلي فقد يحدث تعارض 409 Conflict.",
+                        'recommendation' => 'اضغط على زر [إعادة الاتصال والإصلاح التلقائي] لمسح الويب هوك والسماح للسكربت بالاستقبال بدون تعارض.'
+                    ];
+                }
+
+                if ($pendingCount > 20) {
+                    $issues[] = [
+                        'type' => 'warning',
+                        'code' => 'HIGH_PENDING_UPDATES',
+                        'title' => "تراكم رسائل معلقة ({$pendingCount} تحديث في قائمة الانتظار)",
+                        'message' => 'هناك رسائل متراكمة لم يتم سحبها، مما قد يؤدي لبطء استجابة البوت.',
+                        'recommendation' => 'اضغط على [إعادة الاتصال والإصلاح التلقائي] لتفريغ الرسائل المتراكمة فورياً.'
+                    ];
+                }
+
+                if (!empty($lastErrorMsg)) {
+                    $issues[] = [
+                        'type' => 'warning',
+                        'code' => 'WEBHOOK_DELIVERY_ERROR',
+                        'title' => 'سجل تليغرام خطأ أثناء التوصيل',
+                        'message' => $lastErrorMsg . ($lastErrorDate ? ' (' . date('Y-m-d H:i:s', $lastErrorDate) . ')' : ''),
+                        'recommendation' => 'قم بإجراء إعادة اتصال لتصفية مسار التوصيل.'
+                    ];
+                }
+            }
+        }
+    }
+
+    // 3. Check Gemini AI health
+    $geminiStatus = [
+        'configured' => !empty($geminiKey) && $geminiKey !== 'YOUR_GEMINI_API_KEY_HERE',
+        'connected' => false,
+        'latency_ms' => 0,
+        'message' => 'غير مفعل'
+    ];
+    if ($geminiStatus['configured']) {
+        $t0 = microtime(true);
+        $testUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" . $geminiKey;
+        $payload = ['contents' => [['parts' => [['text' => 'ping']]]]];
+        $ch = curl_init($testUrl);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+        curl_setopt($ch, CURLOPT_TIMEOUT, 6);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        $gRes = curl_exec($ch);
+        $gHttp = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        $geminiStatus['latency_ms'] = round((microtime(true) - $t0) * 1000);
+
+        if ($gHttp === 200) {
+            $geminiStatus['connected'] = true;
+            $geminiStatus['message'] = "متصل بنجاح (gemini-2.5-flash) - زمن الاستجابة: {$geminiStatus['latency_ms']}ms";
+        } else {
+            $geminiStatus['message'] = "خطأ اتصال (كود HTTP {$gHttp})";
+            $issues[] = [
+                'type' => 'warning',
+                'code' => 'GEMINI_ERROR',
+                'title' => 'خلل في مفتاح الذكاء الاصطناعي Gemini',
+                'message' => "فشل الاتصال بنموذج gemini-2.5-flash برمز HTTP {$gHttp}. قد تتعطل معالجة التسجيلات الصوتية وفهم الأسماء المركبة.",
+                'recommendation' => 'تأكد من صحة GEMINI_API_KEY في الإعدادات.'
+            ];
+        }
+    } else {
+        $issues[] = [
+            'type' => 'info',
+            'code' => 'GEMINI_UNCONFIGURED',
+            'title' => 'مفتاح Gemini AI غير محدد',
+            'message' => 'يعمل البوت حالياً بالبحث النصي المباشر فقط دون ميزات الذكاء الاصطناعي والصوت.',
+            'recommendation' => 'أدخل مفتاح Gemini API لتفعيل البحث الصوتي الذكي.'
+        ];
+    }
+
+    // 4. Whitelist stats
+    $whitelistCount = 0;
+    try {
+        $pdo = getPDO();
+        $st = $pdo->query("SELECT COUNT(*) as cnt FROM telegram_whitelist");
+        $whitelistCount = (int)$st->fetch()['cnt'];
+    } catch (\Exception $e) {}
+
+    $statusLevel = 'healthy';
+    foreach ($issues as $iss) {
+        if ($iss['type'] === 'error') {
+            $statusLevel = 'error';
+            break;
+        }
+        if ($iss['type'] === 'warning') {
+            $statusLevel = 'warning';
+        }
+    }
+
+    return [
+        'status' => $statusLevel,
+        'is_connected' => $isConnected,
+        'latency_ms' => $latencyMs,
+        'token_configured' => $tokenConfigured,
+        'token_masked' => $tokenMasked,
+        'bot' => $botInfo,
+        'webhook' => $webhookInfo,
+        'gemini' => $geminiStatus,
+        'whitelist_count' => $whitelistCount,
+        'issues' => $issues,
+        'checked_at' => date('Y-m-d H:i:s')
+    ];
+}
+
+// Route: Get Comprehensive Telegram Diagnostics & Status
+$app->get('/api/telegram/status', function (Request $request, Response $response) {
+    $user = checkAuth($request);
+    if (!$user) {
+        $response->getBody()->write(json_encode(['error' => 'Unauthorized']));
+        return $response->withStatus(401)->withHeader('Content-Type', 'application/json');
+    }
+
+    $diagnostics = getTelegramFullDiagnostics();
+    $response->getBody()->write(json_encode($diagnostics, JSON_UNESCAPED_UNICODE));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+// Route: 1-Click Telegram Reconnect & Auto-Fix
+$app->post('/api/telegram/reconnect-fix', function (Request $request, Response $response) {
+    $user = checkAuth($request);
+    if (!$user || $user['role'] !== 'super_admin') {
+        $response->getBody()->write(json_encode(['error' => 'Forbidden']));
+        return $response->withStatus(403)->withHeader('Content-Type', 'application/json');
+    }
+
+    try {
+        $token = Config::get('TELEGRAM_BOT_TOKEN', '');
+        if (empty($token) || $token === 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
+            $response->getBody()->write(json_encode(['error' => 'توكن تليغرام غير محدد في النظام'], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
+        }
+
+        $actions = [];
+
+        // Step 1: Delete Webhook with drop_pending_updates = true
+        $delRes = callTelegramApi($token, 'deleteWebhook', ['drop_pending_updates' => true], 'POST');
+        if ($delRes['ok']) {
+            $actions[] = 'تم حذف الويب هوك وتفريغ جميع الرسائل والتحديثات المعلقة العالقة بنجاح.';
+        } else {
+            $desc = $delRes['data']['description'] ?? $delRes['curl_error'] ?? 'فشل استدعاء حذف الويب هوك';
+            $actions[] = "محاولة تصفية الويب هوك: {$desc}";
+        }
+
+        // Step 2: Ensure default whitelist records exist in database
+        $pdo = getPDO();
+        $pdo->exec("INSERT IGNORE INTO telegram_whitelist (identifier, description) VALUES ('263844931', 'خالد الغوراني'), ('6538993902', 'Samer Ajaj')");
+        $actions[] = 'تم التحقق من جاهزية أرقام القائمة البيضاء الافتراضية في قاعدة البيانات.';
+
+        // Step 3: Run full diagnostics again
+        $freshDiagnostics = getTelegramFullDiagnostics();
+
+        $resData = [
+            'success' => true,
+            'message' => 'تم تنفيذ عملية إعادة الاتصال والإصلاح بنجاح!',
+            'actions' => $actions,
+            'diagnostics' => $freshDiagnostics
+        ];
+
+        $response->getBody()->write(json_encode($resData, JSON_UNESCAPED_UNICODE));
+        return $response->withHeader('Content-Type', 'application/json');
+    } catch (\Exception $e) {
+        $response->getBody()->write(json_encode(['error' => $e->getMessage()]));
+        return $response->withStatus(500)->withHeader('Content-Type', 'application/json');
+    }
+});
+
+// Route: Send Test Message from Dashboard
+$app->post('/api/telegram/test-message', function (Request $request, Response $response) {
+    $user = checkAuth($request);
+    if (!$user) {
+        $response->getBody()->write(json_encode(['error' => 'Unauthorized']));
+        return $response->withStatus(401)->withHeader('Content-Type', 'application/json');
+    }
+
+    try {
+        $body = json_decode($request->getBody()->getContents(), true);
+        $chatId = isset($body['chat_id']) ? trim($body['chat_id']) : '';
+        if (empty($chatId)) {
+            $response->getBody()->write(json_encode(['error' => 'يرجى تزويد معرف الدردشة (Chat ID) للمستلم'], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
+        }
+
+        $token = Config::get('TELEGRAM_BOT_TOKEN', '');
+        if (empty($token) || $token === 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
+            $response->getBody()->write(json_encode(['error' => 'توكن تليغرام غير محدد في النظام'], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
+        }
+
+        $timestamp = date('Y-m-d H:i:s');
+        $customText = $body['text'] ?? null;
+        $msgText = $customText ?: 
+            "🔔 <b>رسالة فحص تجريبية من لوحة التحكم</b>\n\n" .
+            "✅ تم تأكيد الاتصال بنجاح بين خادم نظام سجلات الناخبين وبوت تليغرام.\n" .
+            "⏱️ <b>توقيت الفحص:</b> <code>{$timestamp}</code>\n" .
+            "👤 <b>المرسل:</b> حساب المسؤول (" . htmlspecialchars($user['sub']) . ")\n" .
+            "📍 <b>البلدات:</b> القادرية & مرياطة - قضاء زغرتا";
+
+        $res = callTelegramApi($token, 'sendMessage', [
+            'chat_id' => $chatId,
+            'text' => $msgText,
+            'parse_mode' => 'HTML'
+        ], 'POST');
+
+        if ($res['ok']) {
+            $resData = [
+                'success' => true,
+                'message' => 'تم إرسال الرسالة التجريبية بنجاح عبر تليغرام!',
+                'telegram_result' => $res['data']['result'] ?? null
+            ];
+            $response->getBody()->write(json_encode($resData, JSON_UNESCAPED_UNICODE));
+            return $response->withHeader('Content-Type', 'application/json');
+        } else {
+            $errDesc = $res['data']['description'] ?? $res['curl_error'] ?? 'خطأ غير معروف من تليغرام';
+            $hint = 'تأكد من صحة المعرف.';
+            if (stripos($errDesc, 'chat not found') !== false) {
+                $hint = 'المستخدم لم يقم ببدء محادثة مع البوت بعد (يجب الدخول للبوت والضغط على /start أولاً).';
+            } elseif (stripos($errDesc, 'bot was blocked by the user') !== false) {
+                $hint = 'المستخدم قام بحظر البوت في حسابه على تليغرام.';
+            }
+
+            $response->getBody()->write(json_encode([
+                'error' => "فشل إرسال الرسالة: {$errDesc}",
+                'hint' => $hint
+            ], JSON_UNESCAPED_UNICODE));
+            return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
+        }
+    } catch (\Exception $e) {
+        $response->getBody()->write(json_encode(['error' => $e->getMessage()]));
+        return $response->withStatus(500)->withHeader('Content-Type', 'application/json');
+    }
+});
+
+// Route: Update Telegram & Gemini Bot Settings
+$app->post('/api/telegram/settings', function (Request $request, Response $response) {
+    $user = checkAuth($request);
+    if (!$user || $user['role'] !== 'super_admin') {
+        $response->getBody()->write(json_encode(['error' => 'Forbidden']));
+        return $response->withStatus(403)->withHeader('Content-Type', 'application/json');
+    }
+
+    try {
+        $body = json_decode($request->getBody()->getContents(), true);
+        $updates = [];
+
+        if (isset($body['bot_token'])) {
+            $newToken = trim($body['bot_token']);
+            if (!empty($newToken)) {
+                // Validate token first
+                $test = callTelegramApi($newToken, 'getMe');
+                if (!$test['ok']) {
+                    $desc = $test['data']['description'] ?? 'توكن غير صالح من سيرفرات تليغرام';
+                    $response->getBody()->write(json_encode([
+                        'error' => "التوكن الجديد غير صالح: {$desc}"
+                    ], JSON_UNESCAPED_UNICODE));
+                    return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
+                }
+                $updates['TELEGRAM_BOT_TOKEN'] = $newToken;
+            }
+        }
+
+        if (isset($body['gemini_api_key'])) {
+            $newGemini = trim($body['gemini_api_key']);
+            if (!empty($newGemini)) {
+                $updates['GEMINI_API_KEY'] = $newGemini;
+            }
+        }
+
+        if (!empty($updates)) {
+            $saved = Config::updateEnv($updates);
+            if (!$saved) {
+                $response->getBody()->write(json_encode(['error' => 'تعذر حفظ الإعدادات في ملف .env'], JSON_UNESCAPED_UNICODE));
+                return $response->withStatus(500)->withHeader('Content-Type', 'application/json');
+            }
+        }
+
+        $freshDiagnostics = getTelegramFullDiagnostics();
+        $response->getBody()->write(json_encode([
+            'success' => true,
+            'message' => 'تم حفظ وتحديث الإعدادات بنجاح!',
+            'diagnostics' => $freshDiagnostics
+        ], JSON_UNESCAPED_UNICODE));
+        return $response->withHeader('Content-Type', 'application/json');
+    } catch (\Exception $e) {
+        $response->getBody()->write(json_encode(['error' => $e->getMessage()]));
+        return $response->withStatus(500)->withHeader('Content-Type', 'application/json');
+    }
+});
+
 // Helper for Telegram Whitelist Checks
 function isTelegramWhitelisted($chatId, $username) {
     try {
