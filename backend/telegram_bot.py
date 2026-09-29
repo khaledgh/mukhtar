@@ -102,9 +102,9 @@ def is_whitelisted(chat_id, username):
     """
     Checks if chat_id or username is in telegram_whitelist.
     Returns:
-      True  -> authorized
-      False -> unauthorized
-      None  -> database connection or query error
+      (True, None)   -> authorized
+      (False, None)  -> unauthorized
+      (None, err)    -> database connection or query error
     """
     try:
         conn = get_db_conn()
@@ -126,10 +126,10 @@ def is_whitelisted(chat_id, username):
         res = cursor.fetchone()
         cursor.close()
         conn.close()
-        return bool(res)
+        return bool(res), None
     except Exception as e:
         print(f"[DB ERROR] Whitelist DB check failed: {e}")
-        return None
+        return None, str(e)
 
 def normalize_arabic_search(text):
     if not text:
@@ -472,13 +472,21 @@ def main():
                     first_name = message.get("from", {}).get("first_name", "مستخدم")
                     
                     # Whitelist Check
-                    auth_status = is_whitelisted(chat_id, username)
+                    auth_status, db_err = is_whitelisted(chat_id, username)
                     if auth_status is None:
                         # Database connection or internal query failure
+                        has_pass = bool(env.get("DB_PASS"))
+                        pass_desc = "معينة (مكتوبة)" if has_pass else "فارغة (Empty)"
                         err_msg = (
                             "⚠️ <b>تنبيه: تعذر الاتصال بقاعدة بيانات الخادم!</b>\n\n"
-                            "فشل البوت في الوصول إلى قاعدة البيانات للتحقق من الصلاحيات.\n"
-                            "💡 <b>للمسؤول:</b> يرجى التأكد من تشغيل خادم MySQL وتطابق بيانات الربط (DB_HOST, DB_USER, DB_PASS, DB_NAME) في <code>backend/.env</code>."
+                            f"🔍 <b>رسالة الخطأ من MySQL:</b>\n"
+                            f"<code>{html.escape(str(db_err))}</code>\n\n"
+                            f"⚙️ <b>البيانات التي يحاول البوت الاتصال بها:</b>\n"
+                            f"• Host: <code>{html.escape(str(env.get('DB_HOST', '127.0.0.1')))}</code>\n"
+                            f"• Database: <code>{html.escape(str(env.get('DB_NAME', 'electoral_db')))}</code>\n"
+                            f"• User: <code>{html.escape(str(env.get('DB_USER', 'root')))}</code>\n"
+                            f"• Password: <code>{pass_desc}</code>\n\n"
+                            "💡 <b>الحل:</b> يرجى التحقق من ملف <code>backend/.env</code> ومطابقته مع بيانات قاعدة البيانات في aaPanel."
                         )
                         send_message(chat_id, err_msg)
                         continue
