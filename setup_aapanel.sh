@@ -29,36 +29,19 @@ else
 fi
 
 # 3. Check and install Python dependencies
-echo "[1/4] Checking Python libraries..."
-if ! "$PYTHON_BIN" -c "import mysql.connector, requests" 2>/dev/null; then
-    echo "  -> Installing mysql-connector-python and requests..."
-    
-    # Try pip with --break-system-packages (required on Debian 12 / Ubuntu 23+)
-    "$PYTHON_BIN" -m pip install --break-system-packages requests mysql-connector-python 2>/dev/null || \
-    "$PYTHON_BIN" -m pip install requests mysql-connector-python 2>/dev/null || \
-    pip3 install --break-system-packages requests mysql-connector-python 2>/dev/null || \
-    pip install requests mysql-connector-python 2>/dev/null || true
-
-    # If still not installed, use apt-get / yum system packages
-    if ! "$PYTHON_BIN" -c "import mysql.connector" 2>/dev/null; then
-        echo "  -> Trying system package manager (apt/yum)..."
-        if command -v apt-get >/dev/null 2>&1; then
-            apt-get update -qq >/dev/null 2>&1 || true
-            apt-get install -y python3-pip python3-mysql.connector python3-requests >/dev/null 2>&1 || true
-            python3 -m pip install --break-system-packages requests mysql-connector-python 2>/dev/null || true
-        elif command -v yum >/dev/null 2>&1; then
-            yum install -y python3-pip python3-mysql >/dev/null 2>&1 || true
-        fi
-    fi
-fi
+echo "[1/4] Checking and upgrading Python libraries for Python 3.12+..."
+# Upgrading to mysql-connector-python>=8.2.0 is required on Python 3.12+ to prevent ssl.wrap_socket removal error
+"$PYTHON_BIN" -m pip install --upgrade --break-system-packages "mysql-connector-python>=8.2.0" requests 2>/dev/null || \
+"$PYTHON_BIN" -m pip install --upgrade "mysql-connector-python>=8.2.0" requests 2>/dev/null || \
+pip3 install --upgrade --break-system-packages "mysql-connector-python>=8.2.0" requests 2>/dev/null || \
+pip install --upgrade "mysql-connector-python>=8.2.0" requests 2>/dev/null || true
 
 # Verify import
-if "$PYTHON_BIN" -c "import mysql.connector" 2>/dev/null; then
+if "$PYTHON_BIN" -c "import mysql.connector, requests" 2>/dev/null; then
     echo "  -> Python libraries verified [OK]."
 else
-    echo "  [WARNING] Could not automatically install mysql-connector-python."
-    echo "  Running manual fallback installation:"
-    apt-get install -y python3-pip python3-mysql.connector || pip3 install --break-system-packages mysql-connector-python
+    echo "  [WARNING] Installing fallback dependencies..."
+    apt-get install -y python3-pip python3-mysql.connector python3-requests 2>/dev/null || true
 fi
 
 # 4. Check Database Connection from Python

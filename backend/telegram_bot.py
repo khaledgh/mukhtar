@@ -47,6 +47,13 @@ if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
     print("Please set TELEGRAM_BOT_TOKEN in .env")
     sys.exit(1)
 
+def _connect_mysql(**kwargs):
+    # Avoid AttributeError: module 'ssl' has no attribute 'wrap_socket' on Python 3.12+
+    try:
+        return mysql.connector.connect(**kwargs, ssl_disabled=True)
+    except TypeError:
+        return mysql.connector.connect(**kwargs)
+
 def get_db_conn():
     host = env.get("DB_HOST", "127.0.0.1")
     port = int(env.get("DB_PORT", 3306))
@@ -56,7 +63,7 @@ def get_db_conn():
     
     # 1. Primary connection attempt
     try:
-        return mysql.connector.connect(
+        return _connect_mysql(
             host=host,
             port=port,
             user=user,
@@ -70,7 +77,7 @@ def get_db_conn():
         if host in ["127.0.0.1", "localhost"]:
             alt_host = "localhost" if host == "127.0.0.1" else "127.0.0.1"
             try:
-                return mysql.connector.connect(
+                return _connect_mysql(
                     host=alt_host,
                     port=port,
                     user=user,
@@ -86,7 +93,7 @@ def get_db_conn():
             for sock in ["/tmp/mysql.sock", "/var/run/mysqld/mysqld.sock", "/var/lib/mysql/mysql.sock"]:
                 if os.path.exists(sock):
                     try:
-                        return mysql.connector.connect(
+                        return _connect_mysql(
                             unix_socket=sock,
                             user=user,
                             password=password,
