@@ -359,6 +359,8 @@ export default function App() {
     } catch (err) {
       console.error('Error deleting whitelist item:', err);
     }
+  };
+
   // Fetch Telegram Diagnostics
   const fetchTelegramDiagnostics = async () => {
     if (!token || userRole !== 'super_admin') return;
